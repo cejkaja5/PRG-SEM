@@ -40,5 +40,7 @@ void call_termios(int reset);
 void open_pipes(data_t *in, data_t *out, const char *in_pipe_name, const char *out_pipe_name);
 bool send_message(int fd, message msg);
 bool recieve_message(int fd, message *out_msg, int timeout_ms);
+void join_all_threads(int N, data_t data[N]);
+int create_all_threads(int N, data_t data[N]);
 
 #endif

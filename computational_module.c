@@ -9,39 +9,34 @@
 #include "prg_io_nonblock.h"
 
 static void *read_from_pipe(void *arg);
+static void *read_user_input(void *arg);
+static void cleanup(void);
 
 int main(int argc, char *argv[]) {
-    data_t data[2] = {{.quit = false, .fd = -1}, {.quit = false, .fd = -1}};
+    atexit(cleanup);
+
+    int N = 2, ret = ERROR_OK;
+    data_t data[] = {{.quit = false, .fd = -1, .thread_name = "Pipe", .thread_function = read_from_pipe}, 
+        {.quit = false, .fd = -1, .thread_name = "Keyboard", .thread_function = read_user_input},
+    };
     data_t *app_to_module = &data[0];
     data_t *module_to_app = &data[1];
-    pthread_t FIFO_reader_thread;
-    pthread_mutex_init(&app_to_module->lock, NULL);
-    pthread_mutex_init(&module_to_app->lock, NULL);
 
-    // call_termios(SET_TERMINAL_TO_RAW);
-
-    if (pthread_create(&FIFO_reader_thread, NULL, read_from_pipe, data) != 0){
-        fprintf(stderr, "ERROR: Creating pipe reader thread failed.\n");
-        return(ERROR_CREATING_THREADS);
-    } else {
-        fprintf(stderr, "INFO: Succesfully created pipe reader thread.\n");
-    }
+    if ((ret = create_all_threads(N, data)) != ERROR_OK) return ret;
 
     const char *app_to_module_pipe_name = argc >= 3 ? argv[1] : "/tmp/computational_module.in";
     const char *module_to_app_pipe_name = argc >= 3 ? argv[2] : "/tmp/computational_module.out";
 
     open_pipes(app_to_module, module_to_app, app_to_module_pipe_name, module_to_app_pipe_name);
     
-    message msg;
-    int types[] = {MSG_STARTUP, MSG_OK, MSG_ERROR, MSG_COMPUTE_DATA, MSG_DONE, MSG_ABORT, MSG_VERSION, MSG_COMPUTE};
-    for (int i = 0; i < 8; i++){
-        msg.type = types[i];
-        send_message(module_to_app->fd, msg);
-    }
+    message msg = {.type = MSG_STARTUP};
 
-    pthread_join(FIFO_reader_thread, NULL);
+    send_message(module_to_app->fd, msg);
+  
+    data[0].quit = true;
 
-    call_termios(SET_TERMINAL_TO_DEFAULT);
+    join_all_threads(N, data);
+
     return ERROR_OK;
 }
 
@@ -80,4 +75,12 @@ static void *read_from_pipe(void *arg){
     return NULL; 
 } 
 
+static void *read_user_input(void *arg){
+    call_termios(SET_TERMINAL_TO_RAW);
+    return NULL;
+}
+
+static void cleanup(void){
+    call_termios(SET_TERMINAL_TO_DEFAULT);
+}
 
