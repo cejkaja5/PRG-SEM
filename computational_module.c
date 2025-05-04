@@ -15,6 +15,7 @@ static void cleanup(void);
 static void send_version_message(int fd, pthread_mutex_t *fd_lock);
 static void send_ok_message(int fd, pthread_mutex_t *fd_lock);
 static void send_error_message(int fd, pthread_mutex_t *fd_lock);
+static void send_abort_message(int fd, pthread_mutex_t *fd_lock);
 static thread_shared_data_t *thread_shared_data_init(void);
 static void destroy_shared_data(thread_shared_data_t *data);
 
@@ -66,7 +67,7 @@ static void *read_from_pipe(void *arg){
     message msg;
 
     while(!data->quit){
-        if (recieve_message(data->app_to_module.fd, &msg, DELAY_MS)){
+        if (recieve_message(data->app_to_module.fd, &msg, DELAY_MS, &data->app_to_module.lock)){
             switch (msg.type)
             {
             case MSG_GET_VERSION:
@@ -88,9 +89,15 @@ static void *read_from_pipe(void *arg){
                     send_error_message(data->module_to_app.fd, &data->module_to_app.lock);
                     break;
                 }
+                pthread_mutex_lock(&data->computer_lock);
+                data->computer_thread_has_work = true;
+                pthread_cond_signal(&data->computer_cond);
+                pthread_mutex_unlock(&data->computer_lock);
+
                 break;
             case MSG_ABORT:
                 fprintf(stderr, "INFO: App requested abortion.\n");
+                send_abort_message(data->module_to_app.fd, &data->module_to_app.lock);
                 break;
             default:
                 fprintf(stderr, "WARN: App sent message of unexpected (but defined) type.\n");
@@ -113,24 +120,41 @@ static void *read_user_input(void *arg){
         switch (c)
         {
         case 'q':
+            pthread_mutex_lock(&data->computer_lock);
             data->quit = true;
+            pthread_cond_signal(&data->computer_cond);
+            pthread_mutex_unlock(&data->computer_lock);
             fprintf(stderr, "INFO: Quiting module.\n");
-            break;        
+            break;
+        case 'a':
+            fprintf(stderr, "INFO: Aborting.\n");            
+            send_abort_message(data->module_to_app.fd, &data->module_to_app.lock);
         default:
             break;
+        }
     }
-}
 
-call_termios(SET_TERMINAL_TO_DEFAULT);
-return NULL;
+    call_termios(SET_TERMINAL_TO_DEFAULT);
+    return NULL;
 }
 
 static void *compute(void *arg){
     thread_shared_data_t *data = (thread_shared_data_t *)arg;
     
+    pthread_mutex_lock(&data->computer_lock);
     while (!data->quit){
-        usleep(10000);
+        while (!data->computer_thread_has_work && !data->quit){
+            pthread_cond_wait(&data->computer_cond, &data->computer_lock);
+        }
+
+        if (data->quit) break;
+
+        fprintf(stderr, "DEBUG: Compute thread does something now.\n");
+
+        data->computer_thread_has_work = false;
     }
+
+    pthread_mutex_unlock(&data->computer_lock);
     
     return NULL;
 }
@@ -142,16 +166,21 @@ static thread_shared_data_t *thread_shared_data_init(void){
         exit(ERROR_ALLOCATION);
     }
     data->quit = false;
+    data->computer_thread_has_work = false;
     data->app_to_module.fd = -1;
     data->module_to_app.fd = -1;
     pthread_mutex_init(&data->app_to_module.lock, NULL);
     pthread_mutex_init(&data->module_to_app.lock, NULL);
+    pthread_mutex_init(&data->computer_lock, NULL);
+    pthread_cond_init(&data->computer_cond, NULL);
     return data;
 }
 
 static void destroy_shared_data(thread_shared_data_t *data){
     pthread_mutex_destroy(&data->app_to_module.lock);
     pthread_mutex_destroy(&data->module_to_app.lock);
+    pthread_mutex_destroy(&data->computer_lock);
+    pthread_cond_destroy(&data->computer_cond);
     free(data);
 }
 
@@ -172,6 +201,11 @@ static void send_ok_message(int fd, pthread_mutex_t *fd_lock){
 
 static void send_error_message(int fd, pthread_mutex_t *fd_lock){
     message msg = {.type = MSG_ERROR};
+    send_message(fd, msg, fd_lock);
+}
+
+static void send_abort_message(int fd, pthread_mutex_t *fd_lock){
+    message msg = {.type = MSG_ABORT};
     send_message(fd, msg, fd_lock);
 }
 

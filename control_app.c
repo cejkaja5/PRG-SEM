@@ -74,6 +74,11 @@ static void *read_user_input(void* arg){
             msg.data.compute.n_im = 1.0;
             send_message(data->app_to_module.fd, msg, &data->app_to_module.lock);
             break;
+        case 'a':
+            fprintf(stderr, "INFO: Requesting abortion.\n");
+            msg.type = MSG_ABORT;
+            send_message(data->app_to_module.fd, msg, &data->app_to_module.lock); 
+            break;
         default:
             break;
         }
@@ -90,7 +95,7 @@ static void *read_from_pipe(void *arg){
     message msg;
 
     while(!data->quit){
-        if (recieve_message(data->module_to_app.fd, &msg, DELAY_MS)){
+        if (recieve_message(data->module_to_app.fd, &msg, DELAY_MS, &data->module_to_app.lock)){
             switch (msg.type)
             {
             case MSG_STARTUP:

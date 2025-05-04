@@ -49,7 +49,7 @@ typedef struct {
 void call_termios(int reset);
 bool open_pipes(data_t *in, data_t *out, bool *quit, const char *in_pipe_name, const char *out_pipe_name);
 bool send_message(int fd, message msg, pthread_mutex_t *fd_lock);
-bool recieve_message(int fd, message *out_msg, int timeout_ms);
+bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *fd_lock);
 void join_all_threads(int N, thread_t threads[N]);
 int create_all_threads(int N, thread_t threads[N], void *data);
 

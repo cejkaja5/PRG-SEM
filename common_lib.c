@@ -97,33 +97,39 @@ bool send_message(int fd, message msg, pthread_mutex_t *fd_lock){
     return true;
 }
 
-bool recieve_message(int fd, message *out_msg, int timeout_ms){
+bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *fd_lock){
     const size_t buffer_size = sizeof(message);
     uint8_t buffer[buffer_size];
     int bytes_read = 0;
 
+    pthread_mutex_lock(fd_lock);
     if (io_getc_timeout(fd, timeout_ms, &buffer[bytes_read++]) == 0){
+        pthread_mutex_unlock(fd_lock);
         return false; // no message to be read
     }
 
     int msg_size;
     if (!get_message_size(buffer[0], &msg_size)){
+        pthread_mutex_unlock(fd_lock);
         fprintf(stderr, "ERROR: Recieved message of unknown type: %d.\n", buffer[0]);
         return false;
     }
 
     if (msg_size > buffer_size){
+        pthread_mutex_unlock(fd_lock);
         fprintf(stderr, "ERROR: Message size (%d) is larger than buffer size (%ld)\n", msg_size, buffer_size);
         return false;
     }
 
     while (bytes_read < msg_size){
         if (io_getc_timeout(fd, timeout_ms, &buffer[bytes_read++]) == 0){
+            pthread_mutex_unlock(fd_lock);
             fprintf(stderr, "ERROR: Couldnt read all %d bytes of message, %d bytes were succesfully read.\n", 
                 msg_size, bytes_read - 1);
             return false; 
         }
     }
+    pthread_mutex_unlock(fd_lock);
 
     if (!parse_message_buf(buffer, msg_size, out_msg)){
         fprintf(stderr, "ERROR: Parsing message of type %d failed.\n", buffer[0]);
