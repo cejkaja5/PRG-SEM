@@ -14,13 +14,16 @@ void call_termios(int reset) {
     }
 }
 
-void open_pipes(data_t *in, data_t *out, const char *in_pipe_name, const char *out_pipe_name){
+
+// return true on succes, returns false if quit flag is raised before someone joins the other end of pipe,
+// exits on opening error
+bool open_pipes(data_t *in, data_t *out, bool *quit, const char *in_pipe_name, const char *out_pipe_name){
 
     pthread_mutex_lock(&in->lock);
     if ((in->fd = io_open_read(in_pipe_name)) == -1){
         pthread_mutex_unlock(&in->lock);
         fprintf(stderr, "ERROR: Cannot open named pipe port '%s'\n", in_pipe_name);
-        in->quit = true;
+        *quit = true;
         call_termios(SET_TERMINAL_TO_DEFAULT);
         exit(ERROR_OPENING_PIPE);
     } else {
@@ -30,30 +33,39 @@ void open_pipes(data_t *in, data_t *out, const char *in_pipe_name, const char *o
     }
 
     fprintf(stderr, "INFO: Waiting for someone to join pipe port '%s' as a reader\n", out_pipe_name); 
-    int tmp = io_open_write(out_pipe_name);
-    pthread_mutex_lock(&out->lock);
-    if ((out->fd = tmp) == -1){
-        pthread_mutex_unlock(&out->lock);
-        fprintf(stderr, "ERROR: Cannot open named pipe port '%s': %s\n", 
-            out_pipe_name, strerror(errno));
-        out->quit = true;
-        call_termios(SET_TERMINAL_TO_DEFAULT);
-        exit(ERROR_OPENING_PIPE);
-    } else {
-        pthread_mutex_unlock(&out->lock);
-        fprintf(stderr, "INFO: Named pipe port '%s' (FD %d) opened succesfully for writing\n", 
-            out_pipe_name, out->fd);
+    int tmp = -1;
+    while (!*quit){
+        tmp = open(out_pipe_name, O_WRONLY | O_NONBLOCK | O_NOCTTY | O_SYNC);
+        if (tmp != -1) break;
+        if (errno != ENXIO) {
+            fprintf(stderr, "ERROR: Cannot open named pipe port '%s': %s\n", 
+                out_pipe_name, strerror(errno));
+                *quit = true;
+                exit(ERROR_OPENING_PIPE);
+            }
+        usleep(10000);
+        }
+    if (*quit) {
+        if (DEBUG_PIPES){
+            fprintf(stderr, "DEBUG: open_pipes() is returning early, because of quit flags.\n");
+        }
+        return false;
     }
+    pthread_mutex_lock(&out->lock);
+    out->fd = tmp;
+    pthread_mutex_unlock(&out->lock);
+    fprintf(stderr, "INFO: Named pipe port '%s' (FD %d) opened succesfully for writing\n", 
+        out_pipe_name, out->fd);
+    return true;
+  
 }
 
-bool send_message(int fd, message msg){
+bool send_message(int fd, message msg, pthread_mutex_t *fd_lock){
     const size_t buffer_size = sizeof(message);
     uint8_t buffer[buffer_size];
     int msg_size;
 
     if (!get_message_size(msg.type, &msg_size)){
-        fprintf(stderr, "ERROR: Sending message of type %d failed, "
-            "because message type is invalid.\n", msg.type);
         return false;
     }
 
@@ -62,14 +74,26 @@ bool send_message(int fd, message msg){
         return false;
     }
 
+    if (fd < 0 || fd > 5){
+        fprintf(stderr, "WARN: File descriptor is an unusuall number (%d).\n", fd);
+    }
+
+    pthread_mutex_lock(fd_lock);
+    if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Locked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
     for (int i = 0; i < msg_size; i++){
         if (io_putc(fd, buffer[i]) != 1){
             fprintf(stderr, "ERROR: io_putc() failed.\n");
+            pthread_mutex_unlock(fd_lock);
+            if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Unlocked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
             return false;
         }
     }
+    pthread_mutex_unlock(fd_lock);
+    if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Unlocked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
 
-    fprintf(stderr, "INFO: Message of type %d successfully sent in %d bytes.\n", msg.type, msg_size);
+    if (DEBUG_MESSAGES) {
+        fprintf(stderr, "DEBUG: Message of type %d successfully sent in %d bytes.\n", msg.type, msg_size);
+    }
     return true;
 }
 
@@ -106,31 +130,37 @@ bool recieve_message(int fd, message *out_msg, int timeout_ms){
         return false;
     }
 
-    fprintf(stderr, "INFO: Message of type %d succesfully recieved in %d bytes.\n", out_msg->type, msg_size);
+    if (DEBUG_MESSAGES){
+        fprintf(stderr, "DEBUG: Message of type %d succesfully recieved in %d bytes.\n", out_msg->type, msg_size);
+    }
+    
     return true;
 }
 
-void join_all_threads(int N, data_t data[N]){
+void join_all_threads(int N, thread_t threads[N]){
+    int r;
     for (int i = 0; i < N; i++){
-        int r = pthread_join(data[i].thread, NULL);
-        fprintf(stderr, "INFO: Joining thread '%s', status: %s.\n", data[i].thread_name, r ? "NOK" : "OK");
+        if ((r = pthread_join(threads[i].thread, NULL)) == ERROR_OK){
+            fprintf(stderr, "INFO: Succesfully joined '%s' thread.\n", threads[i].thread_name);
+        } else {
+            fprintf(stderr, "ERROR: Joining thread %s failed : %s\n", threads[i].thread_name, strerror(r));
+        }
     }
 }
 
-int create_all_threads(int N, data_t data[N]){
+int create_all_threads(int N, thread_t threads[N], void *data){
     int ret = ERROR_OK;
     for (int i = 0; i < N; i++){
-        if ((ret = pthread_mutex_init(&data[i].lock, NULL)) != ERROR_OK) {
-            fprintf(stderr, "ERROR: Initialization of mutex in '%s' thread failed.\n", data[i].thread_name);
+        if ((ret = pthread_mutex_init(&threads[i].lock, NULL)) != ERROR_OK) {
+            fprintf(stderr, "ERROR: Initialization of mutex in '%s' thread failed.\n", threads[i].thread_name);
             return ERROR_CREATING_THREADS;
         };
-        if ((ret = pthread_create(&data[i].thread, NULL, data[i].thread_function, data)) != ERROR_OK){
-            fprintf(stderr, "ERROR: Creating thread '%s' failed.\n", data[i].thread_name);
+        if ((ret = pthread_create(&threads[i].thread, NULL, threads[i].thread_function, data)) != ERROR_OK){
+            fprintf(stderr, "ERROR: Creating thread '%s' failed.\n", threads[i].thread_name);
             return ERROR_CREATING_THREADS;
         } else {
-            fprintf(stderr, "INFO: Succesfully created '%s' thread.\n", data[i].thread_name);
+            fprintf(stderr, "INFO: Succesfully created '%s' thread.\n", threads[i].thread_name);
         }
     }
     return ret;
 }
-

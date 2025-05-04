@@ -5,46 +5,75 @@
 static void *read_user_input(void* arg);
 static void *read_from_pipe(void *arg);
 static void cleanup(void);
+static thread_shared_data_t *thread_shared_data_init(void);
+static void destroy_shared_data(thread_shared_data_t *data);
 
 int main(int argc, char *argv[]) {
     atexit(cleanup);
 
     int N = 2, ret = ERROR_OK;
-    data_t data[] = {{.quit = false, .fd = -1, .thread_name = "Keyboard", .thread_function = read_user_input}, 
-        {.quit = false, .fd = -1, .thread_name = "Pipe", .thread_function = read_from_pipe}
-    };
-    data_t *app_to_module = &data[0];
-    data_t *module_to_app = &data[1];
+    thread_shared_data_t *data = thread_shared_data_init();
 
-    if ((ret = create_all_threads(N, data)) != ERROR_OK) return ret;    
+    thread_t threads[] = {
+        {.thread_name = "Keyboard", .thread_function = read_user_input}, 
+        {.thread_name = "Pipe", .thread_function = read_from_pipe}
+    };
+
+    if ((ret = create_all_threads(N, threads, data)) != ERROR_OK) return ret;    
     
     const char *app_to_module_pipe_name = argc >= 3 ? argv[1] : "/tmp/computational_module.in";
     const char *module_to_app_pipe_name = argc >= 3 ? argv[2] : "/tmp/computational_module.out";
     
-    open_pipes(module_to_app, app_to_module, module_to_app_pipe_name, app_to_module_pipe_name);
+    open_pipes(&data->module_to_app, &data->app_to_module, &data->quit, 
+        module_to_app_pipe_name, app_to_module_pipe_name);
     
-    join_all_threads(N, data);
-    
+    join_all_threads(N, threads);
+    destroy_shared_data(data);
+
     return ERROR_OK;
 }
 
 static void *read_user_input(void* arg){
-
     call_termios(SET_TERMINAL_TO_RAW);
 
-    data_t *app_to_module = (data_t *)arg;
-    data_t *module_to_app = app_to_module + 1;
+    thread_shared_data_t *data = (thread_shared_data_t *)arg;
     int c;
-    while (!module_to_app->quit && !app_to_module->quit){
+    message msg;
+    while (!data->quit){
         c = getchar();
         switch (c)
         {
         case 'q':
-            pthread_mutex_lock(&app_to_module->lock);
-            app_to_module->quit = true; 
-            pthread_mutex_unlock(&app_to_module->lock);
+            fprintf(stderr, "INFO: Quiting control application.\n");
+            pthread_mutex_lock(&data->app_to_module.lock);
+            data->quit = true; 
+            pthread_mutex_unlock(&data->app_to_module.lock);
             break;
-        
+        case 'g':
+            fprintf(stderr, "INFO: Requesting module version.\n");
+            msg.type = MSG_GET_VERSION;
+            send_message(data->app_to_module.fd, msg, &data->app_to_module.lock);
+            break;
+        case 's':
+            fprintf(stderr, "INFO: Setting module computation data.\n");
+            msg.type = MSG_SET_COMPUTE;
+            msg.data.set_compute.c_re = -0.4;
+            msg.data.set_compute.c_im = 0.6;
+            msg.data.set_compute.d_re = 0.001;
+            msg.data.set_compute.d_im = 0.001;
+            msg.data.set_compute.n = 50;
+            send_message(data->app_to_module.fd, msg, &data->app_to_module.lock);
+            break;
+        case '1':
+            fprintf(stderr, "INFO: Requesting module computation.\n");
+            msg.type = MSG_COMPUTE;
+            msg.data.compute.cid = 0;
+            msg.data.compute.re = -1.6;
+            msg.data.compute.im = -1.1;
+            msg.data.compute.n_re = 1.0;
+            msg.data.compute.n_im = 1.0;
+            send_message(data->app_to_module.fd, msg, &data->app_to_module.lock);
+            break;
         default:
             break;
         }
@@ -53,16 +82,15 @@ static void *read_user_input(void* arg){
 }
 
 static void *read_from_pipe(void *arg){
-    data_t *app_to_module = (data_t *)arg;
-    data_t *module_to_app = app_to_module + 1;
+    thread_shared_data_t *data = (thread_shared_data_t *)arg;
     
-    while (module_to_app->fd == -1 && !module_to_app->quit && 
-        !app_to_module->quit) ; // waiting for pipe to be joined
-            
+    while (data->module_to_app.fd == -1 && data->quit) {
+        usleep(DELAY_MS); // waiting for pipe to be joined
+    }    
     message msg;
 
-    while(!module_to_app->quit && !app_to_module->quit){
-        if (recieve_message(module_to_app->fd, &msg, DELAY_MS)){
+    while(!data->quit){
+        if (recieve_message(data->module_to_app.fd, &msg, DELAY_MS)){
             switch (msg.type)
             {
             case MSG_STARTUP:
@@ -84,7 +112,8 @@ static void *read_from_pipe(void *arg){
                 fprintf(stderr, "INFO: Modul has aborted computation.\n");
                 break;
             case MSG_VERSION:
-                fprintf(stderr, "INFO: Modul version is TODO.\n");
+                fprintf(stderr, "INFO: Modul version is %d.%d.%d\n", msg.data.version.major,
+                msg.data.version.minor, msg.data.version.patch);
                 break;
             default:
                 fprintf(stderr, "WARN: modul returned message of unexpected (but defined) type.\n");
@@ -95,6 +124,26 @@ static void *read_from_pipe(void *arg){
    
     return NULL; 
 } 
+
+static thread_shared_data_t *thread_shared_data_init(void){
+    thread_shared_data_t *data = malloc(sizeof(thread_shared_data_t));
+    if (data == NULL){
+        fprintf(stderr, "ERROR: Allocation failed.\n");
+        exit(ERROR_ALLOCATION);
+    }
+    data->quit = false;
+    data->app_to_module.fd = -1;
+    data->module_to_app.fd = -1;
+    pthread_mutex_init(&data->app_to_module.lock, NULL);
+    pthread_mutex_init(&data->module_to_app.lock, NULL);
+    return data;
+}
+
+static void destroy_shared_data(thread_shared_data_t *data){
+    pthread_mutex_destroy(&data->app_to_module.lock);
+    pthread_mutex_destroy(&data->module_to_app.lock);
+    free(data);
+}
 
 static void cleanup(void){
     call_termios(SET_TERMINAL_TO_DEFAULT);

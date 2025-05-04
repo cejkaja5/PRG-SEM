@@ -51,6 +51,21 @@ int io_open_write(const char *fname)
 }
 
 /// ----------------------------------------------------------------------------
+int io_open_write_nonblock(const char *fname)
+{
+   // Tries to open named pipe for writing with NONBLOCK flag. 
+   // If there is no reader on the named pipe, -1 is returned and no error is printed.
+   int fd = open(fname, O_WRONLY | O_NONBLOCK | O_NOCTTY | O_SYNC);
+   if (fd == -1){
+      if (errno == ENXIO){
+         return -1;
+      }
+      fprintf(stderr, "Error in %s(), file %s, line: %d, errno %d\n", __func__, __FILE__, __LINE__, errno);
+   }
+   return fd;
+}
+
+/// ----------------------------------------------------------------------------
 int io_close(int fd)
 {
    return close(fd);
@@ -96,40 +111,3 @@ int io_getc_timeout(int fd, int timeout_ms, unsigned char *c)
 
 /* end of prg_io_nonblock.c */
 
-_Bool is_fd_valid(int fd)
-{
-   return fcntl(fd, F_GETFD) != -1 || errno != EBADF;
-}
-
-void check_fd_info(int fd)
-{
-   struct stat st;
-   if (fstat(fd, &st) == -1)
-   {
-      fprintf(stderr, "fstat failed for fd %d: %s\n", fd, strerror(errno));
-   }
-   else
-   {
-      fprintf(stderr, "fd %d is valid. Mode: %o\n", fd, st.st_mode);
-   }
-}
-
-int safe_io_putc(int fd, unsigned char c)
-{
-   if (!is_fd_valid(fd))
-   {
-      fprintf(stderr, "Invalid file descriptor: %d\n", fd);
-      return -1;
-   }
-
-   int result = write(fd, &c, 1);
-   if (result != 1)
-   {
-      fprintf(stderr,
-              "write(fd=%d, c=0x%02x) failed: return=%d, errno=%d (%s)\n",
-              fd, c, result, errno, strerror(errno));
-      check_fd_info(fd);
-   }
-
-   return result;
-}
