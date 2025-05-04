@@ -18,7 +18,7 @@ int main(int argc, char *argv[]) {
     pthread_mutex_init(&app_to_module->lock, NULL);
     pthread_mutex_init(&module_to_app->lock, NULL);
 
-    call_termios(SET_TERMINAL_TO_RAW);
+    // call_termios(SET_TERMINAL_TO_RAW);
 
     if (pthread_create(&FIFO_reader_thread, NULL, read_from_pipe, data) != 0){
         fprintf(stderr, "ERROR: Creating pipe reader thread failed.\n");

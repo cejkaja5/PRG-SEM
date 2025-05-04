@@ -25,9 +25,14 @@ enum {
     ERROR_CREATING_THREADS = 101,
 };
 
+typedef void *(*thread_fnc_ptr)(void *);
+
 typedef struct {
     bool quit;
     pthread_mutex_t lock;
+    pthread_t thread;
+    thread_fnc_ptr thread_function;
+    char *thread_name;
     int fd; // file descriptor
 } data_t;
 

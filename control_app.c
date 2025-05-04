@@ -6,9 +6,26 @@ static void *read_user_input(void* arg);
 static void *read_from_pipe(void *arg);
 
 int main(int argc, char *argv[]) {
-    data_t data[2] = {{.quit = false, .fd = -1}, {.quit = false, .fd = -1}};
+    int N = 2, ret;
+    data_t data[] = {{.quit = false, .fd = -1, .thread_name = "Keyboard", .thread_function = read_user_input}, 
+                      {.quit = false, .fd = -1, .thread_name = "Pipe", .thread_function = read_from_pipe}};
     data_t *app_to_module = &data[0];
     data_t *module_to_app = &data[1];
+
+    // for (int i = 0; i < N; i++){
+    //     if ((ret = pthread_mutex_init(&data[i].lock, NULL)) != ERROR_OK) {
+    //         fprintf(stderr, "ERROR: Initialization of mutex in '%s' thread failed.\n", data[i].thread_name);
+    //         return ERROR_CREATING_THREADS;
+    //     };
+    //     if ((ret = pthread_create(&data[i].thread, NULL, data[i].thread_function, data)) != ERROR_OK){
+    //         fprintf(stderr, "ERROR: Creating thread '%s' failed.\n", data[i].thread_name);
+    //         return ERROR_CREATING_THREADS;
+    //     } else {
+    //         fprintf(stderr, "INFO: Succesfully created '%s' thread.\n", data[i].thread_name);
+    //     }
+    // }
+
+
     pthread_t user_input_thread, FIFO_reader_thread;
     pthread_mutex_init(&app_to_module->lock, NULL);
     pthread_mutex_init(&module_to_app->lock, NULL);
@@ -35,8 +52,8 @@ int main(int argc, char *argv[]) {
     
     open_pipes(module_to_app, app_to_module, module_to_app_pipe_name, app_to_module_pipe_name);
        
-    pthread_join(user_input_thread, NULL);
-    pthread_join(FIFO_reader_thread, NULL);
+    pthread_join(data[0].thread, NULL);
+    pthread_join(data[1].thread, NULL);
     
     call_termios(SET_TERMINAL_TO_DEFAULT);
     return ERROR_OK;
