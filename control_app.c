@@ -15,9 +15,9 @@ static uint8_t chunks_in_col = 6;
 static int width;
 static int heigth;
 static uint8_t *bitmap; 
-static uint8_t num_of_iterations = 60;
-static complex double lower_left_corner =  0.01 + 0.2 * I;
-static complex double upper_right_corner = 0.05 + 0.25 * I;
+static uint8_t num_of_iterations = 100;
+static complex double lower_left_corner =  -1.6 - 1.1 * I;
+static complex double upper_right_corner = 1.6 + 1.1 * I;
 static complex double pixel_size;
 static const complex double recurzive_eq_constant = -0.4 + 0.6 * I; 
 static int window_state = WINDOW_NOT_INITIATED;
@@ -43,16 +43,12 @@ int main(int argc, char *argv[]) {
     };
 
     if ((ret = create_all_threads(N, threads, data)) != ERROR_OK) return ret;    
-    
-    fprintf(stderr ,"DEBUG: exited thread creation.\n");
 
     const char *app_to_module_pipe_name = argc >= 3 ? argv[1] : "/tmp/computational_module.in";
     const char *module_to_app_pipe_name = argc >= 3 ? argv[2] : "/tmp/computational_module.out";
     
     open_pipes(&data->module_to_app, &data->app_to_module, &data->quit, 
         module_to_app_pipe_name, app_to_module_pipe_name);
-        
-    fprintf(stderr ,"DEBUG: exited pipe openings.\n");
     
         
     join_all_threads(N, threads);

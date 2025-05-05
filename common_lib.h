@@ -22,7 +22,7 @@
 #define DELAY_MS 100
 
 #define DEBUG_MESSAGES 0
-#define DEBUG_PIPES 1
+#define DEBUG_PIPES 0
 #define DEBUG_MUTEX 0
 #define DEBUG_COMPUTATIONS 0
 

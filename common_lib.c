@@ -19,9 +19,7 @@ void call_termios(int reset) {
 // exits on opening error
 bool open_pipes(data_t *in, data_t *out, bool *quit, const char *in_pipe_name, const char *out_pipe_name){
 
-    fprintf(stderr, "DEBUG: before mutex.\n");
     pthread_mutex_lock(&in->lock);
-    fprintf(stderr, "DEBUG: after mutex.\n");
     if ((in->fd = io_open_read(in_pipe_name)) == -1){
         pthread_mutex_unlock(&in->lock);
         fprintf(stderr, "ERROR: Cannot open named pipe port '%s'\n", in_pipe_name);
