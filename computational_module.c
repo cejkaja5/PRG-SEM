@@ -16,8 +16,11 @@ static void send_version_message(int fd, pthread_mutex_t *fd_lock);
 static void send_ok_message(int fd, pthread_mutex_t *fd_lock);
 static void send_error_message(int fd, pthread_mutex_t *fd_lock);
 static void send_abort_message(int fd, pthread_mutex_t *fd_lock);
+static void send_done_message(int fd, pthread_mutex_t *fd_lock);
 static thread_shared_data_t *thread_shared_data_init(void);
 static void destroy_shared_data(thread_shared_data_t *data);
+static void compute_one_pixel_and_send_message(uint8_t cid, uint8_t x_coord, uint8_t y_coord, 
+    double z_re, double z_im, int fd, pthread_mutex_t *fd_lock);
 
 static const uint8_t major = 1;
 static const uint8_t minor = 2;
@@ -78,7 +81,7 @@ static void *read_from_pipe(void *arg){
                 c = msg.data.set_compute.c_re + msg.data.set_compute.c_im * I; 
                 d = msg.data.set_compute.d_re + msg.data.set_compute.d_im * I;
                 n = msg.data.set_compute.n;
-                fprintf(stderr, "INFO: App set computation data. c = %.3f %+.3fi, d = %.3f %+.3fi, n = %d\n", 
+                fprintf(stderr, "INFO: App set computation data. c = %.4f %+.4fi, d = %.4f %+.4fi, n = %d\n", 
                     creal(c), cimag(c), creal(d), cimag(d), n);
                 send_ok_message(data->module_to_app.fd, &data->module_to_app.lock);
                 break;
@@ -88,12 +91,22 @@ static void *read_from_pipe(void *arg){
                     fprintf(stderr, "WARN: Computation data has not been set properly.\n");
                     send_error_message(data->module_to_app.fd, &data->module_to_app.lock);
                     break;
+                } else if (data->computer_thread_has_work){
+                    fprintf(stderr, "WARN: Computer thread is busy.\n");
+                    send_error_message(data->module_to_app.fd, &data->module_to_app.lock);
+                    break;
                 }
                 pthread_mutex_lock(&data->computer_lock);
                 data->computer_thread_has_work = true;
+                data->re = msg.data.compute.re;
+                data->im = msg.data.compute.im;
+                data->n_re = msg.data.compute.n_re;
+                data->n_im = msg.data.compute.n_im;
+                data->cid = msg.data.compute.cid;
+                fprintf(stderr, "DEBUG: Parameters: lower left corner %.4f %+.4fi, n_re = %d, n_im = %d, cid = %d\n",
+                    data->re, data->im, data->n_re, data->n_im, data->cid);
                 pthread_cond_signal(&data->computer_cond);
                 pthread_mutex_unlock(&data->computer_lock);
-
                 break;
             case MSG_ABORT:
                 fprintf(stderr, "INFO: App requested abortion.\n");
@@ -146,17 +159,46 @@ static void *compute(void *arg){
         while (!data->computer_thread_has_work && !data->quit){
             pthread_cond_wait(&data->computer_cond, &data->computer_lock);
         }
-
         if (data->quit) break;
 
-        fprintf(stderr, "DEBUG: Compute thread does something now.\n");
+        double z_im = data->im + data->n_im * cimag(d);
+        for (int row = 0; row < data->n_im && !data->quit; z_im -= cimag(d), row++){
+            double z_re = data->re;
+            for (int col = 0; col < data->n_re && !data->quit; z_re += creal(d), col++){
+                compute_one_pixel_and_send_message(data->cid, col, data->n_im - 1 - row, z_re, z_im, 
+                data->module_to_app.fd, &data->module_to_app.lock);
+            }
+        }
 
         data->computer_thread_has_work = false;
+        send_done_message(data->module_to_app.fd, &data->module_to_app.lock);
     }
 
     pthread_mutex_unlock(&data->computer_lock);
     
     return NULL;
+}
+
+static void compute_one_pixel_and_send_message(uint8_t cid, uint8_t x_coord, uint8_t y_coord, 
+    double z_re, double z_im, int fd, pthread_mutex_t *fd_lock){
+    if (DEBUG_COMPUTATIONS){
+        fprintf(stderr, "DEBUG: z = %7.4f %+7.4fi ", z_re, z_im);        
+    }
+
+    complex double z = z_re + z_im * I;
+    int i = 0;
+    for (; i < n; i++){
+        if (cabs(z) > 2){
+            break;
+        }
+        z = z * z + c;
+    }
+    if (DEBUG_COMPUTATIONS){
+        fprintf(stderr, "n = %d\n", i);
+    }
+    message msg = {.type = MSG_COMPUTE_DATA, .data.compute_data.cid = cid, .data.compute_data.i_re = x_coord,
+        .data.compute_data.i_im = y_coord, .data.compute_data.iter = i};
+    send_message(fd, msg, fd_lock);
 }
 
 static thread_shared_data_t *thread_shared_data_init(void){
@@ -209,3 +251,7 @@ static void send_abort_message(int fd, pthread_mutex_t *fd_lock){
     send_message(fd, msg, fd_lock);
 }
 
+static void send_done_message(int fd, pthread_mutex_t *fd_lock){
+    message msg = {.type = MSG_DONE};
+    send_message(fd, msg, fd_lock);
+}

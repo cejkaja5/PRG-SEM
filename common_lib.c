@@ -19,7 +19,9 @@ void call_termios(int reset) {
 // exits on opening error
 bool open_pipes(data_t *in, data_t *out, bool *quit, const char *in_pipe_name, const char *out_pipe_name){
 
+    fprintf(stderr, "DEBUG: before mutex.\n");
     pthread_mutex_lock(&in->lock);
+    fprintf(stderr, "DEBUG: after mutex.\n");
     if ((in->fd = io_open_read(in_pipe_name)) == -1){
         pthread_mutex_unlock(&in->lock);
         fprintf(stderr, "ERROR: Cannot open named pipe port '%s'\n", in_pipe_name);
@@ -81,13 +83,19 @@ bool send_message(int fd, message msg, pthread_mutex_t *fd_lock){
     pthread_mutex_lock(fd_lock);
     if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Locked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
     for (int i = 0; i < msg_size; i++){
-        if (io_putc(fd, buffer[i]) != 1){
-            fprintf(stderr, "ERROR: io_putc() failed.\n");
-            pthread_mutex_unlock(fd_lock);
-            if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Unlocked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
-            return false;
+        int retries = 100;
+        while (retries-- > 0){
+            if (io_putc(fd, buffer[i]) == 1) break;
+            if (errno == EAGAIN) usleep(10); // pipe is full, wait and try again
+            else {
+                fprintf(stderr, "ERROR: io_putc() failed. : %s.\n", strerror(errno));
+                pthread_mutex_unlock(fd_lock);
+                if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Unlocked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
+                return false;
+            }
         }
     }
+
     pthread_mutex_unlock(fd_lock);
     if (DEBUG_MUTEX) fprintf(stderr, "DEBUG: Unlocked mutex of FD %d at %p.\n", fd, (void *) fd_lock);
 
@@ -101,6 +109,11 @@ bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *
     const size_t buffer_size = sizeof(message);
     uint8_t buffer[buffer_size];
     int bytes_read = 0;
+
+    if (fd == -1){
+        fprintf(stderr, "ERROR: cannot recieve from fd = -1.\n");
+        return false;
+    }
 
     pthread_mutex_lock(fd_lock);
     if (io_getc_timeout(fd, timeout_ms, &buffer[bytes_read++]) == 0){

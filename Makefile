@@ -1,8 +1,8 @@
-CFLAGS += -Wall -std=gnu99 -g -pedantic
-LDFLAGS = -pthread
-
+CFLAGS += -Wall -std=gnu99 -g -pedantic 
+LDFLAGS = -pthread -lm
+ 
 CFLAGS += $(shell sdl2-config --cflags)
-LDFLAGS += $(shell sdl2-config --libs) -lSDL2_image
+LDFLAGS += $(shell sdl2-config --libs) -lSDL2_image  
 
 HW = prgsem
 BINARIES = control_app_exec computational_module_exec

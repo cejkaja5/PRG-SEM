@@ -13,6 +13,11 @@ typedef struct {
     _Bool computer_thread_has_work;
     pthread_mutex_t computer_lock;
     pthread_cond_t computer_cond;
+    double re;
+    double im;
+    uint8_t n_re;
+    uint8_t n_im;
+    uint8_t cid;
     data_t module_to_app;
     data_t app_to_module;
 } thread_shared_data_t;

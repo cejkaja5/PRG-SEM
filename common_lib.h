@@ -19,11 +19,12 @@
 
 #define SET_TERMINAL_TO_RAW 0
 #define SET_TERMINAL_TO_DEFAULT 1
-#define DELAY_MS 10
+#define DELAY_MS 100
 
 #define DEBUG_MESSAGES 0
-#define DEBUG_PIPES 0
+#define DEBUG_PIPES 1
 #define DEBUG_MUTEX 0
+#define DEBUG_COMPUTATIONS 0
 
 enum {
     ERROR_OK = 0,
