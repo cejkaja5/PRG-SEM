@@ -67,6 +67,14 @@ int io_getc(int fd);
 /// ----------------------------------------------------------------------------
 int io_getc_timeout(int fd, int timeout_ms, unsigned char *c);
 
+/// ----------------------------------------------------------------------------
+/// @brief io_read_timeout
+/// 
+/// @param fd 
+/// 
+/// @return 1 if all bytes are read succefully, -1 otherwise
+/// ----------------------------------------------------------------------------
+int io_read_timeout(int fd, __uint8_t *buffer, size_t msg_size, int timeout_ms);
 #endif
 
 /* end of prg_io_nonblock.h */

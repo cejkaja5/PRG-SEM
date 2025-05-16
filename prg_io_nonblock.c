@@ -4,8 +4,7 @@
  * Author:   Jan Faigl
  */
 
-#include <errno.h>
-#include <fcntl.h>
+
 #include <unistd.h>
 #include <stdio.h>
 #include <termios.h>
@@ -15,6 +14,7 @@
 #include <errno.h>
 #include <fcntl.h>    // for fcntl
 #include <sys/stat.h> // for fstat
+
 
 #include "prg_io_nonblock.h"
 
@@ -107,6 +107,48 @@ int io_getc_timeout(int fd, int timeout_ms, unsigned char *c)
       }
    }
    return r;
+}
+
+/// ------------------------------------------------------------------------------
+int io_read_timeout(int fd, __uint8_t *buffer, size_t msg_size, int timeout_ms){
+   struct pollfd ufdr[1];
+   ufdr[0].fd = fd;
+   ufdr[0].events = POLLIN | POLLRDNORM;
+
+   size_t total_read = 0;
+   int r = 0;
+   int retries = 100;
+
+   while (total_read < msg_size && retries-- > 0) {
+      int poll_result = poll(ufdr, 1, timeout_ms);
+
+      if (poll_result == 0) continue; // no data read within timeout, try again
+      else if (poll_result < 0){
+         fprintf(stderr, "ERROR: poll() failed: %s\n", strerror(errno));
+         return -1;
+      }
+
+      if (ufdr[0].revents & (POLLIN | POLLRDNORM)){
+         r = read(fd, buffer + total_read, msg_size - total_read);
+         if (r > 0) {
+            total_read += r;
+         }
+         else if (r == 0) {
+            fprintf(stderr, "ERROR: io_read_timeout() reached EOF after"  
+               "reading only %ld/%ld bytes.\n", total_read, msg_size);
+               return -1;
+         } else if (errno == EAGAIN || errno == EWOULDBLOCK){
+            continue; // pipe empty
+         } else {
+            fprintf(stderr, "ERROR: read() inside io_read_timeout() failed: %s\n",
+               strerror(errno));
+               return -1;
+         }
+      }
+   } 
+   if (total_read == msg_size) return 1; // success
+   fprintf(stderr, "DEBUG: io_read_timeout() has reached timeout.\n");
+   return 0;   
 }
 
 /* end of prg_io_nonblock.c */

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <complex.h>
+#include <signal.h>
 
 #include <termios.h>
 #include <unistd.h>
@@ -19,12 +20,13 @@
 
 #define SET_TERMINAL_TO_RAW 0
 #define SET_TERMINAL_TO_DEFAULT 1
-#define DELAY_MS 100
+#define DELAY_MS 10
 
 #define DEBUG_MESSAGES 0
 #define DEBUG_PIPES 0
 #define DEBUG_MUTEX 0
 #define DEBUG_COMPUTATIONS 0
+#define DEBUG_GUI 0
 
 enum {
     ERROR_OK = 0,
@@ -49,7 +51,7 @@ typedef struct {
 
 void call_termios(int reset);
 bool open_pipes(data_t *in, data_t *out, bool *quit, const char *in_pipe_name, const char *out_pipe_name);
-bool send_message(int fd, message msg, pthread_mutex_t *fd_lock);
+bool send_message(int *fd, message msg, pthread_mutex_t *fd_lock);
 bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *fd_lock);
 void join_all_threads(int N, thread_t threads[N]);
 int create_all_threads(int N, thread_t threads[N], void *data);

@@ -9,10 +9,10 @@
 #include "messages.h"
 
 // - function  ----------------------------------------------------------------
-bool get_message_size(uint8_t msg_type, int *len)
+bool get_message_size(message *msg, int *len)
 {
    bool ret = true;
-   switch(msg_type) {
+   switch(msg->type) {
       case MSG_OK:
       case MSG_ERROR:
       case MSG_ABORT:
@@ -35,6 +35,8 @@ bool get_message_size(uint8_t msg_type, int *len)
       case MSG_COMPUTE_DATA:
          *len = 2 + 4; // cid, dx, dy, iter
          break;
+      case MSG_COMPUTE_DATA_BURST:
+         *len = 1 + 2 + msg->data.compute_data_burst.length + 1; //cid + lenght + lenght * uint8_t + cksum   
       default:
          ret = false;
          break;
@@ -123,7 +125,7 @@ bool parse_message_buf(const uint8_t *buf, int size, message *msg)
    if (
          size > 0 && cksum == 0xff && // sum of all bytes must be 255
          ((msg->type = buf[0]) >= 0) && msg->type < MSG_NBR &&
-         get_message_size(msg->type, &message_size) && size == message_size) {
+         get_message_size(msg, &message_size) && size == message_size) {
       ret = true;
       switch(msg->type) {
          case MSG_OK:

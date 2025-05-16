@@ -11,6 +11,7 @@
 typedef struct {
     _Bool quit;
     _Bool computer_thread_has_work;
+    _Bool abort_computation;
     pthread_mutex_t computer_lock;
     pthread_cond_t computer_cond;
     double re;

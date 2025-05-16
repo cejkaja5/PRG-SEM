@@ -10,7 +10,7 @@ BINARIES = control_app_exec computational_module_exec
 all: $(BINARIES)
 
 # Build the control app (UI + SDL + pipe communication)
-control_app_exec: control_app.o messages.o prg_io_nonblock.o xwin_sdl.o common_lib.o
+control_app_exec: control_app.o messages.o prg_io_nonblock.o xwin_sdl.o common_lib.o queue.o
 	$(CC) $^ $(LDFLAGS) -o $@
 
 # Build the computational module (headless, uses pipes)
