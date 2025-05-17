@@ -9,8 +9,9 @@ static void *read_from_pipe(void *arg);
 static void cleanup(void);
 static thread_shared_data_t *thread_shared_data_init(void);
 static void destroy_shared_data(thread_shared_data_t *data);
-static void control_app_init(void);
+static void control_app_init(int argc, char *argv[]);
 static void send_compute_message(thread_shared_data_t *data);
+static void send_set_compute_message(thread_shared_data_t *data);
 static void handle_message_compute_data(message msg);
 static void handle_message_compute_data_burst(message msg);
 static void queue_clear(void* queue);
@@ -30,25 +31,28 @@ static void set_lower_left_corner(void);
 static void set_upper_right_corner(void);
 static void set_recurzive_constant(void);
 static void calculate_window_parameters(void);
+static void zoom_in(void);
+static void zoom_out(void);
+static void move_image(int direction);
 
-static uint8_t chunk_width = 64;
-static uint8_t chunk_height = 48;
-static uint8_t chunks_in_row = 16;
-static uint8_t chunks_in_col = 16; 
-static int width;
-static int heigth;
+static uint8_t chunk_width = 60;
+static uint8_t chunk_height = 60;
+static uint8_t chunks_in_row = 4;
+static uint8_t chunks_in_col = 3; 
+static int width = 0;  // will be calculated at runtime
+static int heigth = 0; 
 static uint8_t *bitmap; 
 static uint8_t num_of_iterations = 100;
 static complex double lower_left_corner =  -1.6 - 1.1 * I;
 static complex double upper_right_corner = 1.6 + 1.1 * I;
-static complex double pixel_size;
+static complex double pixel_size = 0.0 + 0.0 * I; // will be calculated at runtime
 static complex double recurzive_eq_constant = -0.4 + 0.6 * I; 
 static int window_state = WINDOW_NOT_INITIATED;
 static void *queue_of_CIDs_to_be_computed;
 static pthread_mutex_t queue_mtx;
 
 int main(int argc, char *argv[]) {
-    control_app_init();
+    control_app_init(argc, argv);
 
     int N = 2, ret = ERROR_OK;
     thread_shared_data_t *data = thread_shared_data_init();
@@ -106,14 +110,7 @@ static void *read_user_input(void* arg){
         case 's':
             if (data->app_to_module.fd == -1) break;
             fprintf(stderr, "INFO: Setting module computation data.\n");
-            queue_clear(queue_of_CIDs_to_be_computed);
-            msg.type = MSG_SET_COMPUTE;
-            msg.data.set_compute.c_re = creal(recurzive_eq_constant);
-            msg.data.set_compute.c_im = cimag(recurzive_eq_constant);
-            msg.data.set_compute.d_re = creal(pixel_size);
-            msg.data.set_compute.d_im = cimag(pixel_size);
-            msg.data.set_compute.n = num_of_iterations;
-            send_message(&data->app_to_module.fd, msg, &data->app_to_module.lock);
+            send_set_compute_message(data);
             break;
         case '1':
             if (data->app_to_module.fd == -1) break;
@@ -158,6 +155,30 @@ static void *read_user_input(void* arg){
             break;
         case 'p':
             open_parameters_settings(data);
+            fprintf(stderr, "INFO: Press 's' to send new computation parameters to module.\n");
+            break;
+        case '+':
+            if (window_state != WINDOW_ACTIVE) break;
+            zoom_in();
+            if (data->app_to_module.fd == -1) break;
+            send_set_compute_message(data);
+            send_compute_message(data);
+            break;
+        case '-':
+            if (window_state != WINDOW_ACTIVE) break;
+            zoom_out();
+            if (data->app_to_module.fd == -1) break;
+            send_set_compute_message(data);
+            send_compute_message(data);
+            break;
+        case 27: // arrow escape sequence
+            if (io_getc_timeout(STDIN_FILENO, DELAY_MS, &c) != 1 || c != '[') break;
+            if (io_getc_timeout(STDIN_FILENO, DELAY_MS, &c) != 1 || c < 'A' || c > 'D') break;
+            if (window_state != WINDOW_ACTIVE) break;
+            move_image(c);
+            if (data->app_to_module.fd == -1) break;
+            send_set_compute_message(data);
+            send_compute_message(data);
             break;
         default:
             break;
@@ -198,7 +219,7 @@ static void *read_from_pipe(void *arg){
                 msg.data.compute_data.iter);
 #endif            
             break;
-        case MSG_COMPUTE_DATA_BURST:
+            case MSG_COMPUTE_DATA_BURST:
             handle_message_compute_data_burst(msg);
 #if DEBUG_COMPUTATIONS
             fprintf(stderr, "DEBUG: Modul returned computed data in burst for "
@@ -206,14 +227,13 @@ static void *read_from_pipe(void *arg){
 #endif
             break;
         case MSG_DONE:
-            fprintf(stderr, "INFO: Modul is done with computing.\n");
+            fprintf(stderr, "INFO: Modul is done with computing a chunk.\n");
             if (data->app_to_module.fd == -1) break;
             message *tmp = queue_pop(queue_of_CIDs_to_be_computed);
             if (tmp != NULL) {
                 send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
                 free(tmp);
             }
-            redraw_window_safe();
             break;
         case MSG_ABORT:
             fprintf(stderr, "INFO: Modul has aborted computation.\n");
@@ -258,26 +278,98 @@ static void cleanup(void){
     free(queue_of_CIDs_to_be_computed);
 }
 
-static void control_app_init(void){
+static void control_app_init(int argc, char *argv[]){
     call_termios(SET_TERMINAL_TO_RAW);
     atexit(cleanup);
     queue_of_CIDs_to_be_computed = create();
     setClear(queue_of_CIDs_to_be_computed, free);
     pthread_mutex_init(&queue_mtx, NULL);
-    calculate_window_parameters();
-    if ((bitmap = malloc(width * heigth * 3 * sizeof(uint8_t))) == NULL) {
-        fprintf(stderr, "ERROR: Allocation of bitmap failed.\n");
-        exit(ERROR_ALLOCATION);
-    };
     signal(SIGPIPE, SIG_IGN);
     fprintf(stderr, "INFO: Press 'h' for help.\n");
+    int tmp;
+    double tmp_dbl;
+    if (argc >= 4){ // sets width, rounds down to whole chunks
+        tmp = atoi(argv[3]);
+        if (tmp > 0 || tmp <= 16 * chunk_width){
+            chunks_in_row = tmp / chunk_width; 
+        }
+    }
+    if (argc >= 5){ // sets heigth, rounds down to whole chunks
+        tmp = atoi(argv[4]);
+        if (tmp > 0 || tmp <= 16 * chunk_height){
+            chunks_in_col = tmp / chunk_height; 
+        }
+    }
+    if (argc >= 6){ // sets lower left corner
+        upper_right_corner = 5.0 + 5.0 * I;
+        tmp_dbl = atof(argv[5]);
+        if (tmp_dbl != 0 && tmp_dbl >= -5 && tmp_dbl < 5){
+            lower_left_corner = tmp_dbl + cimag(lower_left_corner) * I;
+        }
+    }
+    if (argc >= 7){
+        tmp_dbl = atof(argv[6]);
+        if (tmp_dbl != 0 && tmp_dbl >= -5 && tmp_dbl < 5){
+            lower_left_corner = tmp_dbl * I + creal(lower_left_corner);
+        }
+    }
+    if (argc >= 8){ // sets upper right corner
+        tmp_dbl = atof(argv[7]);
+        if (tmp_dbl != 0 && tmp_dbl > cimag(lower_left_corner) && tmp_dbl <= 5){
+            upper_right_corner = tmp_dbl + cimag(upper_right_corner) * I;
+        }
+    }
+    if (argc >= 9){
+        tmp_dbl = atof(argv[8]);
+        if (tmp_dbl != 0 && tmp_dbl > creal(lower_left_corner) && tmp_dbl <= 5){
+            upper_right_corner = tmp_dbl * I + creal(upper_right_corner);
+        }
+    }
+    if (argc >= 10){ // sets constant in recurzive equation
+        tmp_dbl = atof(argv[9]);
+        if (tmp_dbl != 0 && tmp_dbl >= -2 && tmp_dbl <= 2){
+            recurzive_eq_constant = tmp_dbl + cimag(recurzive_eq_constant) * I;
+        }
+    }
+    if (argc >= 11){
+        tmp_dbl = atof(argv[10]);
+        if (tmp_dbl != 0 && tmp_dbl >= -2 && tmp_dbl <= 2){
+            recurzive_eq_constant = tmp_dbl * I + creal(recurzive_eq_constant);
+        }
+    }
+    if (argc >= 12){ // sets maximam number if iterations
+        tmp = atoi(argv[11]);
+        if (tmp > 0 && tmp < 256){
+            num_of_iterations = tmp;
+        }
+    }
+    calculate_window_parameters();
 }
 
 static void calculate_window_parameters(void){
-    width = chunk_width * chunks_in_row;
-    heigth = chunk_height * chunks_in_col;
+    bool realocate_bitmap = false;
+    if (width != chunk_width * chunks_in_row){
+        width = chunk_width * chunks_in_row;
+        realocate_bitmap = true;
+    } 
+    if (heigth != chunk_height * chunks_in_col){
+        heigth = chunk_height * chunks_in_col;
+        realocate_bitmap = true;
+    }
     pixel_size = (creal(upper_right_corner) - creal(lower_left_corner)) / width + 
         ((cimag(upper_right_corner) - cimag(lower_left_corner)) / heigth) * I;
+    if (realocate_bitmap){
+        free(bitmap);
+        bitmap = calloc(width * heigth * 3, sizeof(uint8_t));
+#if DEBUG_MEMORY
+        fprintf(stderr, "INFO: Reallocated bitmap buffer. New width = %d, new height = %d, " 
+            "new size is %d.\n", width, heigth, width * heigth * 3);
+#endif        
+        if (bitmap == NULL){
+            fprintf(stderr, "FATAL ERROR: Allocation of bitmap failed.\n");
+            exit(ERROR_ALLOCATION);
+        }
+    }
 }
 
 static void send_compute_message(thread_shared_data_t *data){
@@ -307,6 +399,18 @@ static void send_compute_message(thread_shared_data_t *data){
         send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
         free(tmp);
     }
+}
+
+static void send_set_compute_message(thread_shared_data_t *data){
+    message msg;
+    queue_clear(queue_of_CIDs_to_be_computed);
+    msg.type = MSG_SET_COMPUTE;
+    msg.data.set_compute.c_re = creal(recurzive_eq_constant);
+    msg.data.set_compute.c_im = cimag(recurzive_eq_constant);
+    msg.data.set_compute.d_re = creal(pixel_size);
+    msg.data.set_compute.d_im = cimag(pixel_size);
+    msg.data.set_compute.n = num_of_iterations;
+    send_message(&data->app_to_module.fd, msg, &data->app_to_module.lock);
 }
 
 static void handle_message_compute_data(message msg){
@@ -341,11 +445,18 @@ static void handle_message_compute_data_burst(message msg){
         red = (uint8_t) 9 * (1 - t) * t * t * t * 255;
         green = (uint8_t) 15 * (1 - t) * (1 - t) * t * t * 255;
         blue = (uint8_t) 8.5 * (1 - t) * (1 - t) * (1 - t) * t * 255;
+#if DEBUG_MEMORY
+        if (idx >= width * heigth * 3 || idx < 0){
+            fprintf(stderr, "WARN: Trying to write outside bitmap buffer. idx = %d, bitmap size = %d.\n",
+                idx, width * heigth);
+        }
+#endif                
         bitmap[idx] = red;
         bitmap[idx + 1] = green;
         bitmap[idx + 2] = blue;
     }
     free(msg.data.compute_data_burst.iters);
+    redraw_window_safe();
 }
 
 static void queue_clear(void *queue){
@@ -381,7 +492,6 @@ static void redraw_window_safe(void){
     if (window_state != WINDOW_ACTIVE){
         return;
     }
-    fprintf(stderr, "INFO: Drawing window.\n");
     xwin_redraw(width, heigth, bitmap);
 }
 
@@ -403,6 +513,22 @@ static void open_window_safe(void){
 }
 
 static void print_help(void){
+    fprintf(stderr, "\n============================= ARGUMENTS ============================\n");
+    fprintf(stderr, "  argv[1] - App to module named pipe path. Has to be opened beforehand.\n");
+    fprintf(stderr, "  argv[2] - Module to app named pipe path. Has to be opened beforehand.\n");
+    fprintf(stderr, "  argv[3] - Image width. Maximum is %d. Will be rounded down to nearest\n"
+                    "            mutliple of %d\n", 16*chunk_width, chunk_width);
+    fprintf(stderr, "  argv[4] - Image height. Maximum is %d. Will be rounded down to nearest\n"
+                    "            mutliple of %d\n", 16*chunk_height, chunk_height);
+    fprintf(stderr, "  argv[5] - Real part of lower left corner. Must be between -5 and 5.\n");
+    fprintf(stderr, "  argv[6] - Imaginary part of lower left corner. Must be between -5 and 5.\n");
+    fprintf(stderr, "  argv[7] - Real part of upper right corner. Must be between real part of\n"
+                    "            lower left corner and 5.\n");
+    fprintf(stderr, "  argv[8] - Imaginary part of upper right corner. Must be between imaginary part of\n"
+                    "            lower left corner and 5.\n");
+    fprintf(stderr, "  argv[9] - Real part of constant in recurzive equation. Must be between -2 and 2.\n");
+    fprintf(stderr, "  argv[10] - Imaginary part of constant in recurzive equation. Must be between -2 and 2.\n");
+    fprintf(stderr, "  argv[11] - Maximum number of iterations of recursive equation. Must be between 1 and 255\n");
     fprintf(stderr, "\n============================= COMMANDS =============================\n");
     fprintf(stderr, "  'q' - Quit application and module.\n");
     fprintf(stderr, "  'g' - Get module version.\n");
@@ -458,7 +584,7 @@ static void open_parameters_settings(thread_shared_data_t *data){
                 reprint = true;
                 break;
             case '4':
-               clear_settings_menu(11);
+                clear_settings_menu(11);
                 set_lower_left_corner();
                 reprint = true;
                 break;
@@ -644,5 +770,53 @@ static void set_recurzive_constant(void){
     call_termios(SET_TERMINAL_TO_RAW);
     clear_settings_menu(13);
 }
+
+static void zoom_in(void){
+    double real_diff = creal(upper_right_corner) - creal(lower_left_corner);
+    double imag_diff = cimag(upper_right_corner) - cimag(lower_left_corner);
+    if (real_diff < 0.001 || imag_diff < 0.001) return;
+    lower_left_corner += (0.1 * real_diff + 0.1 * imag_diff * I);
+    upper_right_corner -= (0.1 * real_diff + 0.1 * imag_diff * I);
+    calculate_window_parameters();
+}
+static void zoom_out(void){
+    double real_diff = creal(upper_right_corner) - creal(lower_left_corner);
+    double imag_diff = cimag(upper_right_corner) - cimag(lower_left_corner);
+    if (real_diff > 4 || imag_diff > 4) return;
+    lower_left_corner -= (0.125 * real_diff + 0.125 * imag_diff * I);
+    upper_right_corner += (0.125 * real_diff + 0.125 * imag_diff * I);
+    calculate_window_parameters();
+}
+
+static void move_image(int direction){
+    double real_diff = creal(upper_right_corner) - creal(lower_left_corner);
+    double imag_diff = cimag(upper_right_corner) - cimag(lower_left_corner);
+    switch (direction)
+    {
+    case DIRECTION_UP:
+        if (cimag(upper_right_corner) + 0.2 * imag_diff > 5.0) break;
+        upper_right_corner += 0.2 * imag_diff * I;
+        lower_left_corner +=  0.2 * imag_diff * I;
+        break;
+    case DIRECTION_DOWN:
+        if (cimag(lower_left_corner) - 0.2 * imag_diff < -5.0) break;
+        upper_right_corner -= 0.2 * imag_diff * I;
+        lower_left_corner -=  0.2 * imag_diff * I;
+        break;
+    case DIRECTION_RIGHT:
+        if (creal(upper_right_corner) + 0.2 * real_diff > 5.0) break;
+        upper_right_corner += 0.2 * real_diff;
+        lower_left_corner +=  0.2 * real_diff;
+        break;
+    case DIRECTION_LEFT:
+        if (creal(lower_left_corner) - 0.2 * real_diff < -5.0) break;
+        upper_right_corner -= 0.2 * real_diff;
+        lower_left_corner -=  0.2 * real_diff;
+        break;    
+    default:
+        break;
+    }
+}
+
 
 

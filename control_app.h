@@ -21,4 +21,11 @@ enum {
     WINDOW_CLOSED,
 } window_status_enum;
 
+enum {
+    DIRECTION_UP = 'A',
+    DIRECTION_DOWN = 'B',
+    DIRECTION_RIGHT = 'C',
+    DIRECTION_LEFT = 'D',
+} directions_enum;
+
 #endif

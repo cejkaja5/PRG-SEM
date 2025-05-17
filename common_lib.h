@@ -29,6 +29,7 @@
 #define DEBUG_MUTEX 0
 #define DEBUG_COMPUTATIONS 0
 #define DEBUG_GUI 0
+#define DEBUG_MEMORY 1
 
 enum {
     ERROR_OK = 0,
