@@ -5,11 +5,13 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include "messages.h"
 
 // - function  ----------------------------------------------------------------
-bool get_message_size(message *msg, int *len)
+bool get_message_size(const message *msg, int *len)
 {
    bool ret = true;
    switch(msg->type) {
@@ -18,6 +20,7 @@ bool get_message_size(message *msg, int *len)
       case MSG_ABORT:
       case MSG_DONE:
       case MSG_GET_VERSION:
+      case MSG_QUIT:
          *len = 2; // 2 bytes message - id + cksum
          break;
       case MSG_STARTUP:
@@ -36,7 +39,8 @@ bool get_message_size(message *msg, int *len)
          *len = 2 + 4; // cid, dx, dy, iter
          break;
       case MSG_COMPUTE_DATA_BURST:
-         *len = 1 + 2 + msg->data.compute_data_burst.length + 1; //cid + lenght + lenght * uint8_t + cksum   
+         *len = 2 + 2 + msg->data.compute_data_burst.length + 1; //cid + lenght + lenght * uint8_t + cksum   
+         break;
       default:
          ret = false;
          break;
@@ -47,9 +51,21 @@ bool get_message_size(message *msg, int *len)
 // - function  ----------------------------------------------------------------
 bool fill_message_buf(const message *msg, uint8_t *buf, int size, int *len)
 {
-   if (!msg || size < sizeof(message) || !buf) {
+   if (!msg || !buf ||
+      (msg->type == MSG_COMPUTE_DATA_BURST && size < msg->data.compute_data_burst.length + 5)) {
       return false;
    }
+   if (msg->type != MSG_COMPUTE_DATA_BURST){
+      int needed_size;
+      if (get_message_size(msg, &needed_size) == false) {
+         fprintf(stderr, "ERROR: Unknown message type (%d).\n", msg->type);
+      }
+      if (needed_size > size){
+         fprintf(stderr, "ERROR: Needed buffer size is %d, actuall buffer size is %d.\n", needed_size, size);
+         return false;
+      } 
+   }
+
    // 1st - serialize the message into a buffer
    bool ret = true;
    *len = 0;
@@ -59,6 +75,7 @@ bool fill_message_buf(const message *msg, uint8_t *buf, int size, int *len)
       case MSG_ABORT:
       case MSG_DONE:
       case MSG_GET_VERSION:
+      case MSG_QUIT:
          *len = 1;
          break;
       case MSG_STARTUP:
@@ -96,6 +113,13 @@ bool fill_message_buf(const message *msg, uint8_t *buf, int size, int *len)
          buf[4] = msg->data.compute_data.iter;
          *len = 5;
          break;
+      case MSG_COMPUTE_DATA_BURST:
+         memcpy(&(buf[1]), &msg->data.compute_data_burst.length, 2);
+         buf[3] = msg->data.compute_data_burst.chunk_id;
+         memcpy(&(buf[4]), msg->data.compute_data_burst.iters, 
+            msg->data.compute_data_burst.length); 
+         *len = 4 + msg->data.compute_data_burst.length;
+         break;
       default: // unknown message type
          ret = false;
          break;
@@ -110,6 +134,7 @@ bool fill_message_buf(const message *msg, uint8_t *buf, int size, int *len)
       buf[*len] = 255 - buf[*len]; // compute cksum
       *len += 1; // add cksum to buffer
    }
+
    return ret;
 }
 
@@ -133,6 +158,7 @@ bool parse_message_buf(const uint8_t *buf, int size, message *msg)
          case MSG_ABORT:
          case MSG_DONE:
          case MSG_GET_VERSION:
+         case MSG_QUIT:
             break;
          case MSG_STARTUP:
             for (int i = 0; i < STARTUP_MSG_LEN; ++i) {
@@ -163,6 +189,14 @@ bool parse_message_buf(const uint8_t *buf, int size, message *msg)
             msg->data.compute_data.i_re = buf[2];
             msg->data.compute_data.i_im = buf[3];
             msg->data.compute_data.iter = buf[4];
+            break;
+         case MSG_COMPUTE_DATA_BURST:
+            memcpy(&msg->data.compute_data_burst.length, &(buf[1]), 2);
+            msg->data.compute_data_burst.chunk_id = buf[3];
+            uint8_t *iters = malloc(msg->data.compute_data_burst.length);
+            if (!iters) return false;
+            msg->data.compute_data_burst.iters = iters;
+            memcpy(iters, &(buf[4]), msg->data.compute_data_burst.length);
             break;
          default: // unknown message type
             ret = false;

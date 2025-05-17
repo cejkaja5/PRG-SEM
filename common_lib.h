@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "prg_io_nonblock.h"
 #include "messages.h"
@@ -21,6 +22,7 @@
 #define SET_TERMINAL_TO_RAW 0
 #define SET_TERMINAL_TO_DEFAULT 1
 #define DELAY_MS 10
+#define GARBAGE_BUFFER_SIZE 256
 
 #define DEBUG_MESSAGES 0
 #define DEBUG_PIPES 0
@@ -50,7 +52,7 @@ typedef struct {
 } thread_t;
 
 void call_termios(int reset);
-bool open_pipes(data_t *in, data_t *out, bool *quit, const char *in_pipe_name, const char *out_pipe_name);
+bool open_pipes(data_t *in, data_t *out, atomic_bool *quit, const char *in_pipe_name, const char *out_pipe_name);
 bool send_message(int *fd, message msg, pthread_mutex_t *fd_lock);
 bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *fd_lock);
 void join_all_threads(int N, thread_t threads[N]);

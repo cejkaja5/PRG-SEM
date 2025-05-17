@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <string.h>
 
+
 #include "computational_module.h"
 #include "common_lib.h"
 #include "prg_io_nonblock.h"
@@ -19,8 +20,9 @@ static void send_abort_message(int *fd, pthread_mutex_t *fd_lock);
 static void send_done_message(int *fd, pthread_mutex_t *fd_lock);
 static thread_shared_data_t *thread_shared_data_init(void);
 static void destroy_shared_data(thread_shared_data_t *data);
-static void compute_one_pixel_and_send_message(uint8_t cid, uint8_t x_coord, uint8_t y_coord, 
-    double z_re, double z_im, int  *fd, pthread_mutex_t *fd_lock);
+static uint8_t compute_one_pixel(complex double z);
+static void print_help(void);
+static void computational_module_init(void);
 
 static const uint8_t major = 1;
 static const uint8_t minor = 2;
@@ -31,7 +33,7 @@ static double complex d = 0.0 + 0.0 * I; // increment
 static uint8_t n = -1;
 
 int main(int argc, char *argv[]) {
-    atexit(cleanup);
+    computational_module_init();
 
     int N = 3, ret = ERROR_OK;
     thread_shared_data_t *data = thread_shared_data_init();
@@ -62,13 +64,13 @@ int main(int argc, char *argv[]) {
 static void *read_from_pipe(void *arg){
     thread_shared_data_t *data = (thread_shared_data_t *)arg;
     
-    while (data->module_to_app.fd == -1 && !data->quit){
+    while (data->module_to_app.fd == -1 && !atomic_load(&data->quit)){
         usleep(DELAY_MS);
     } ; // waiting for pipe to be joined
             
     message msg;
 
-    while(!data->quit){
+    while(!atomic_load(&data->quit)){
         if (recieve_message(data->app_to_module.fd, &msg, DELAY_MS, &data->app_to_module.lock)){
             switch (msg.type)
             {
@@ -121,6 +123,13 @@ static void *read_from_pipe(void *arg){
                 fprintf(stderr, "INFO: App requested abortion.\n");
                 send_abort_message(&data->module_to_app.fd, &data->module_to_app.lock);
                 break;
+            case MSG_QUIT:
+                fprintf(stderr, "INFO: Quiting module.\n");
+                pthread_mutex_lock(&data->computer_lock);
+                atomic_store(&data->quit, true);
+                pthread_cond_signal(&data->computer_cond);
+                pthread_mutex_unlock(&data->computer_lock);  
+                break;
             default:
                 fprintf(stderr, "WARN: App sent message of unexpected (but defined) type.\n");
                 break;
@@ -131,19 +140,22 @@ static void *read_from_pipe(void *arg){
 } 
 
 
-static void *read_user_input(void *arg){
-    call_termios(SET_TERMINAL_TO_RAW);
-    
-    thread_shared_data_t *data = (thread_shared_data_t *)arg;
-    
-    int c;
-    while (!data->quit){
-        c = getchar();
+static void *read_user_input(void *arg){    
+    thread_shared_data_t *data = (thread_shared_data_t *)arg;    
+    uint8_t c;
+    int r;
+    while (!atomic_load(&data->quit)){
+        if ((r = io_getc_timeout(STDIN_FILENO, DELAY_MS, &c)) == -1){
+            fprintf(stderr, "ERROR: io_getc_timeout() from stdin failed: %s\n", strerror(errno));
+            continue;
+        } else if (r == 0){
+            continue; // no character read
+        }
         switch (c)
         {
         case 'q':
             pthread_mutex_lock(&data->computer_lock);
-            data->quit = true;
+            atomic_store(&data->quit, true);
             pthread_cond_signal(&data->computer_cond);
             pthread_mutex_unlock(&data->computer_lock);
             fprintf(stderr, "INFO: Quiting module.\n");
@@ -153,12 +165,14 @@ static void *read_user_input(void *arg){
             fprintf(stderr, "INFO: Aborting.\n");
             data->abort_computation = true;            
             send_abort_message(&data->module_to_app.fd, &data->module_to_app.lock);
+            break;
+        case 'h':
+            print_help();
+            break;
         default:
             break;
         }
     }
-
-    call_termios(SET_TERMINAL_TO_DEFAULT);
     return NULL;
 }
 
@@ -166,21 +180,31 @@ static void *compute(void *arg){
     thread_shared_data_t *data = (thread_shared_data_t *)arg;
     
     pthread_mutex_lock(&data->computer_lock);
-    while (!data->quit){
-        while (!data->computer_thread_has_work && !data->quit){
+    while (!atomic_load(&data->quit)){
+        while (!data->computer_thread_has_work && !atomic_load(&data->quit)){
             pthread_cond_wait(&data->computer_cond, &data->computer_lock);
         }
-        if (data->quit) break;
+        if (atomic_load(&data->quit)) break;
 
-        double z_im = data->im + data->n_im * cimag(d);
-        for (int row = 0; row < data->n_im && !data->quit && !data->abort_computation; z_im -= cimag(d), row++){
-            double z_re = data->re;
-            for (int col = 0; col < data->n_re && !data->quit && !data->abort_computation; z_re += creal(d), col++){
-                compute_one_pixel_and_send_message(data->cid, col, data->n_im - 1 - row, z_re, z_im, 
-                &data->module_to_app.fd, &data->module_to_app.lock);
-            }
+        uint8_t *chunk_buffer = malloc(data->n_im * data->n_re);
+        if (chunk_buffer == NULL){
+            fprintf(stderr, "ERROR: allocation of chunk buffer failed.\n");
+            data->computer_thread_has_work = false;
+            break;
         }
-        
+        message msg = {.type = MSG_COMPUTE_DATA_BURST, .data.compute_data_burst = {.chunk_id = data->cid, 
+            .iters = chunk_buffer, .length = data->n_im * data->n_re}};       
+
+
+        complex double z, z0 = data->re + data->im * I;
+        for (int row = 0, i = 0; row < data->n_im && !atomic_load(&data->quit) && !data->abort_computation; row++){
+            for (int col = 0; col < data->n_re && !atomic_load(&data->quit) && !data->abort_computation; col++, i++){
+                z = z0 + (col * creal(d) + row * cimag(d) * I);
+                chunk_buffer[i] = compute_one_pixel(z);
+            } 
+        }
+        send_message(&data->module_to_app.fd, msg, &data->module_to_app.lock);
+        free(chunk_buffer);
         data->abort_computation = false;
         data->computer_thread_has_work = false;
         send_done_message(&data->module_to_app.fd, &data->module_to_app.lock);
@@ -191,13 +215,7 @@ static void *compute(void *arg){
     return NULL;
 }
 
-static void compute_one_pixel_and_send_message(uint8_t cid, uint8_t x_coord, uint8_t y_coord, 
-    double z_re, double z_im, int *fd, pthread_mutex_t *fd_lock){
-#if DEBUG_COMPUTATIONS
-        fprintf(stderr, "DEBUG: z = %7.4f %+7.4fi ", z_re, z_im);        
-#endif
-
-    complex double z = z_re + z_im * I;
+static uint8_t compute_one_pixel(complex double z){
     int i = 0;
     for (; i < n; i++){
         if (cabs(z) > 2){
@@ -205,13 +223,7 @@ static void compute_one_pixel_and_send_message(uint8_t cid, uint8_t x_coord, uin
         }
         z = z * z + c;
     }
-#if DEBUG_COMPUTATIONS
-        fprintf(stderr, "n = %d\n", i);
-#endif
-    if (*fd == -1) return;
-    message msg = {.type = MSG_COMPUTE_DATA, .data.compute_data.cid = cid, .data.compute_data.i_re = x_coord,
-        .data.compute_data.i_im = y_coord, .data.compute_data.iter = i};
-    send_message(fd, msg, fd_lock);
+    return i;
 }
 
 static thread_shared_data_t *thread_shared_data_init(void){
@@ -220,7 +232,7 @@ static thread_shared_data_t *thread_shared_data_init(void){
         fprintf(stderr, "ERROR: Allocation failed.\n");
         exit(ERROR_ALLOCATION);
     }
-    data->quit = false;
+    atomic_store(&data->quit, false);
     data->computer_thread_has_work = false;
     data->abort_computation = false;
     data->app_to_module.fd = -1;
@@ -269,3 +281,19 @@ static void send_done_message(int *fd, pthread_mutex_t *fd_lock){
     message msg = {.type = MSG_DONE};
     send_message(fd, msg, fd_lock);
 }
+
+static void print_help(void){
+    fprintf(stderr, "\n============================= COMMANDS =============================\n");
+    fprintf(stderr, "\t'q' - Quit module.\n"); 
+    fprintf(stderr, "\t'a' - Abort computation.\n");
+    fprintf(stderr, "\t'h' - Help message.\n");
+    fprintf(stderr, "====================================================================\n\n");
+}
+
+static void computational_module_init(void){
+    atexit(cleanup);
+    call_termios(SET_TERMINAL_TO_RAW);
+    fprintf(stderr, "INFO: Press 'h' for help.\n");
+    signal(SIGPIPE, SIG_IGN);
+}
+

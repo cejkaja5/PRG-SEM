@@ -9,7 +9,7 @@
 #endif
 
 typedef struct {
-    _Bool quit;
+    atomic_bool quit;
     _Bool computer_thread_has_work;
     _Bool abort_computation;
     pthread_mutex_t computer_lock;

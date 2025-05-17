@@ -10,8 +10,7 @@
 #endif
 
 typedef struct {
-    _Bool quit;
-    pthread_mutex_t WR_pipe_lock; // locks named pipe, so that only one thread at time writes into it
+    atomic_bool quit;   
     data_t module_to_app;
     data_t app_to_module;
 } thread_shared_data_t;
