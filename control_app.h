@@ -12,10 +12,14 @@
 #include "stb_image_write.h"
 
 #define MAX_IMAGE_NAME_LENGHT 30
+#define NO_KEY_PRESSED_INTERVAL 100 
+#define KEY_HELD_REGISTER_PRESS_INTERVAL 500
 
 #ifdef thread_shared_data_t
 #undef thread_shared_data_t
 #endif
+
+#define KEYPRESS_DELAY 100
 
 typedef struct {
     atomic_bool quit;   

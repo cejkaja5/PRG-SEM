@@ -3,6 +3,14 @@
 #include "control_app.h"
 
 
+/*
+This program uses library "std_image_write.h" from public domain for saving images to png.
+The library was downloaded from https://github.com/nothings/stb/blob/master/stb_image_write.h
+Credit for this library goes to Sean Barrett.
+The licence for this library is at the end of "std_image_write.h" file.
+*/
+
+
 static void *read_user_input(void* arg);
 static void *read_from_pipe(void *arg);
 static void cleanup(void);
@@ -31,11 +39,12 @@ static void zoom_in(void);
 static void zoom_out(void);
 static void move_image(int direction);
 static void save_image(void);
+static void wait_for_key_release_or_delay(int timeout_interval_ms, int max_total_delay_ms);
 
-static uint8_t chunk_width = 60;
-static uint8_t chunk_height = 60;
+static uint8_t chunk_width = 64;
+static uint8_t chunk_height = 48;
 static uint8_t chunks_in_row = 4;
-static uint8_t chunks_in_col = 3; 
+static uint8_t chunks_in_col = 4; 
 static int width = 0;  // will be calculated at runtime
 static int heigth = 0; 
 static uint8_t *bitmap; 
@@ -46,6 +55,7 @@ static complex double pixel_size = 0.0 + 0.0 * I; // will be calculated at runti
 static complex double recurzive_eq_constant = -0.4 + 0.6 * I; 
 static int window_state = WINDOW_NOT_INITIATED;
 static queue_t queue_of_CIDs_to_be_computed;
+static uint8_t module_num_of_threads = 1; // set with module startup message
 
 int main(int argc, char *argv[]) {
     control_app_init(argc, argv);
@@ -54,11 +64,11 @@ int main(int argc, char *argv[]) {
     thread_shared_data_t *data = thread_shared_data_init();
 
     thread_t threads[] = {
-        {.thread_name = "Keyboard", .thread_function = read_user_input}, 
-        {.thread_name = "Pipe", .thread_function = read_from_pipe}
+        {.thread_name = "Keyboard", .thread_function = read_user_input, .data = data}, 
+        {.thread_name = "Pipe", .thread_function = read_from_pipe, .data = data}
     };
 
-    if ((ret = create_all_threads(N, threads, data)) != ERROR_OK) return ret;    
+    if ((ret = create_all_threads(N, threads)) != ERROR_OK) return ret;    
 
     const char *app_to_module_pipe_name = argc >= 3 ? argv[1] : "/tmp/computational_module.in";
     const char *module_to_app_pipe_name = argc >= 3 ? argv[2] : "/tmp/computational_module.out";
@@ -78,13 +88,22 @@ static void *read_user_input(void* arg){
     uint8_t c;
     int r;
     message msg;
-    while (!data->quit){
+    bool allow_new_keypress = true;  // only allow single presses, not holding down a key
+    while (!data->quit){             // if a key is held down, it is registred as one press 
+                                     // every KEY_HELD_REGISTER_PRESS_INTERVAL ms 
         if ((r = io_getc_timeout(STDIN_FILENO, DELAY_MS, &c)) == -1){
             fprintf(stderr, "ERROR: io_getc_timeout() from stdin failed: %s\n", strerror(errno));
             continue;
-        } else if (r == 0){
+        } else if (r == 0 && allow_new_keypress){             
             continue; // no character read
         }
+        if (!allow_new_keypress) {
+            wait_for_key_release_or_delay(NO_KEY_PRESSED_INTERVAL, KEY_HELD_REGISTER_PRESS_INTERVAL);
+            allow_new_keypress = true;
+            continue;
+        }
+        allow_new_keypress = false;
+
         switch (c)
         {
         case 'q': 
@@ -187,9 +206,16 @@ static void *read_from_pipe(void *arg){
         if (!recieve_message(data->module_to_app.fd, &msg, DELAY_MS, &data->module_to_app.lock)) continue;
         switch (msg.type)
         {
-        case MSG_STARTUP:
-            fprintf(stderr, "INFO: Modul startup was successfull. Startup message: %s\n", msg.data.startup.message);
+        case MSG_STARTUP: {
+            uint8_t startup_message[STARTUP_MSG_LEN];
+            uint8_t *ch = startup_message;
+            memcpy(startup_message, msg.data.startup.message, STARTUP_MSG_LEN);
+            fprintf(stderr, "INFO: Modul startup was successfull. Startup message: %s\n", startup_message);
+            while (*(ch++) != '\0') ;
+            module_num_of_threads = *ch;    
+            fprintf(stderr, "INFO: Module is computing on %u threads.\n", module_num_of_threads);
             break;
+        }
         case MSG_OK:
             fprintf(stderr, "INFO: Modul responded OK.\n");
             break;
@@ -217,6 +243,9 @@ static void *read_from_pipe(void *arg){
             if (data->app_to_module.fd == -1) break;
             message *tmp = queue_pop(&queue_of_CIDs_to_be_computed);
             if (tmp != NULL) {
+#if DEBUG_MULTITHREADING
+                fprintf(stderr, "DEBUG: Requesting computation of chunk %d.\n", tmp->data.compute.cid);
+#endif 
                 send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
                 free(tmp);
             }
@@ -361,6 +390,10 @@ static void send_compute_message(thread_shared_data_t *data){
     queue_clear(&queue_of_CIDs_to_be_computed);
     complex double first_chunk_corner = lower_left_corner + 
         ((chunks_in_col - 1) * chunk_height * cimag(pixel_size)) * I;
+#if DEBUG_MULTITHREADING
+            fprintf(stderr, "DEBUG: pushing chunks 0 - %d to queue.\n", chunks_in_col * chunks_in_row - 1);
+#endif 
+
     for (int c_row = 0; c_row < chunks_in_col; c_row++){
         for (int c_col = 0; c_col < chunks_in_row; c_col++){
             message *msg;
@@ -378,16 +411,20 @@ static void send_compute_message(thread_shared_data_t *data){
             queue_push(&queue_of_CIDs_to_be_computed, msg);
         }
     }
-    message *tmp = queue_pop(&queue_of_CIDs_to_be_computed);
-    if (tmp != NULL) {
-        send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
-        free(tmp);
+    for (int i = 0; i < module_num_of_threads; i++){
+        message *tmp = queue_pop(&queue_of_CIDs_to_be_computed);
+        if (tmp != NULL) {
+#if DEBUG_MULTITHREADING
+            fprintf(stderr, "DEBUG: Requesting computation of chunk %d.\n", tmp->data.compute.cid);
+#endif            
+            send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
+            free(tmp);
+        }
     }
 }
 
 static void send_set_compute_message(thread_shared_data_t *data){
     message msg;
-    queue_clear(&queue_of_CIDs_to_be_computed);
     msg.type = MSG_SET_COMPUTE;
     msg.data.set_compute.c_re = creal(recurzive_eq_constant);
     msg.data.set_compute.c_im = cimag(recurzive_eq_constant);
@@ -443,9 +480,6 @@ static void handle_message_compute_data_burst(message msg){
     redraw_window_safe();
 }
 
-
-
-
 static void close_window_safe(void){
     if (window_state != WINDOW_ACTIVE) {
         return;
@@ -479,6 +513,24 @@ static void open_window_safe(void){
     }
 }
 
+static void wait_for_key_release_or_delay(int timeout_interval_ms, int max_total_delay_ms) {
+    const int period = DELAY_MS;
+    int time_passed = 0;
+    int total_time_passed = 0;
+    int r;
+
+    while (time_passed < timeout_interval_ms && total_time_passed < max_total_delay_ms){
+        r = getchar();
+        usleep(period * 1000);
+        if (r != EOF) {
+            time_passed = 0; // key is still held
+        } else {
+            time_passed += period;
+        }
+        total_time_passed += period;
+    }           
+}
+
 static void print_help(void){
     fprintf(stderr, "\n============================= ARGUMENTS ============================\n");
     fprintf(stderr, "  argv[1] - App to module named pipe path. Has to be opened beforehand.\n");
@@ -496,7 +548,7 @@ static void print_help(void){
     fprintf(stderr, "  argv[9] - Real part of constant in recurzive equation. Must be between -2 and 2.\n");
     fprintf(stderr, "  argv[10] - Imaginary part of constant in recurzive equation. Must be between -2 and 2.\n");
     fprintf(stderr, "  argv[11] - Maximum number of iterations of recursive equation. Must be between 1 and 255\n");
-    fprintf(stderr, "\n============================= COMMANDS =============================\n");
+    fprintf(stderr, "============================= COMMANDS =============================\n");
     fprintf(stderr, "  'q' - Quit application and module.\n");
     fprintf(stderr, "  'h' - Help message.\n");
     fprintf(stderr, "  'g' - Get module version.\n");
@@ -606,7 +658,7 @@ for (int i = 0; i < lines; ++i) {
 static void set_chunk_size(){
     fprintf(stderr, "\n============================= SETTINGS =============================\n");
     fprintf(stderr, "Enter chunk width in pixels and chunk height in pixels. Value must be \n");
-    fprintf(stderr, "between 1 and 255.\n");
+    fprintf(stderr, "between 1 and 64.\n");
     fprintf(stderr, "\n");    
     fprintf(stderr, "Current chunk width = %d\n", chunk_width);
     fprintf(stderr, "Current chunk height = %d\n", chunk_height);
@@ -615,11 +667,11 @@ static void set_chunk_size(){
     fprintf(stderr, "====================================================================\n\n");
     call_termios(SET_TERMINAL_TO_DEFAULT);
     int new_width, new_height;
-    if (scanf("%d", &new_width) && new_width > 0 && new_width < 256) {
+    if (scanf("%d", &new_width) && new_width > 0 && new_width <= 64) {
         chunk_width = new_width;
     }
 
-    if (scanf("%d", &new_height) && new_height > 0 && new_height < 256){
+    if (scanf("%d", &new_height) && new_height > 0 && new_height <= 64){
         chunk_height = new_height;
     }
     call_termios(SET_TERMINAL_TO_RAW);
@@ -762,24 +814,24 @@ static void move_image(int direction){
     switch (direction)
     {
     case DIRECTION_UP:
-        if (cimag(upper_right_corner) + 0.2 * imag_diff > 5.0) break;
-        upper_right_corner += 0.2 * imag_diff * I;
-        lower_left_corner +=  0.2 * imag_diff * I;
+        if (cimag(upper_right_corner) + 0.1 * imag_diff > 5.0) break;
+        upper_right_corner += 0.1 * imag_diff * I;
+        lower_left_corner +=  0.1 * imag_diff * I;
         break;
     case DIRECTION_DOWN:
-        if (cimag(lower_left_corner) - 0.2 * imag_diff < -5.0) break;
-        upper_right_corner -= 0.2 * imag_diff * I;
-        lower_left_corner -=  0.2 * imag_diff * I;
+        if (cimag(lower_left_corner) - 0.1 * imag_diff < -5.0) break;
+        upper_right_corner -= 0.1 * imag_diff * I;
+        lower_left_corner -=  0.1 * imag_diff * I;
         break;
     case DIRECTION_RIGHT:
-        if (creal(upper_right_corner) + 0.2 * real_diff > 5.0) break;
-        upper_right_corner += 0.2 * real_diff;
-        lower_left_corner +=  0.2 * real_diff;
+        if (creal(upper_right_corner) + 0.1 * real_diff > 5.0) break;
+        upper_right_corner += 0.1 * real_diff;
+        lower_left_corner +=  0.1 * real_diff;
         break;
     case DIRECTION_LEFT:
-        if (creal(lower_left_corner) - 0.2 * real_diff < -5.0) break;
-        upper_right_corner -= 0.2 * real_diff;
-        lower_left_corner -=  0.2 * real_diff;
+        if (creal(lower_left_corner) - 0.1 * real_diff < -5.0) break;
+        upper_right_corner -= 0.1 * real_diff;
+        lower_left_corner -=  0.1 * real_diff;
         break;    
     default:
         break;
@@ -791,6 +843,7 @@ static void save_image(void){
     while ((ch = getchar()) != '\n' && ch != EOF); // clear stdin
     call_termios(SET_TERMINAL_TO_DEFAULT);
     fprintf(stderr, "INFO: Saving image as png. Enter image name without suffix (leave blank to cancel):\n");
+    fprintf(stderr, "INFO: Maximum image name lenght is %d. Longer name will be cropped.\n", MAX_IMAGE_NAME_LENGHT);
     char name[MAX_IMAGE_NAME_LENGHT + 1 + 4] = {0}; // leave space for .png
     const char suffix[] = ".png";
     fgets(name, MAX_IMAGE_NAME_LENGHT, stdin);
@@ -807,6 +860,7 @@ static void save_image(void){
         fprintf(stderr, "INFO: Image was saved successfully.\n");
     }
     call_termios(SET_TERMINAL_TO_RAW);
+    while (getchar() != EOF) ; // clean stdin in case user entered name longer than allowed
 }
 
 

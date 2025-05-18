@@ -117,7 +117,7 @@ int io_read_timeout(int fd, __uint8_t *buffer, size_t msg_size, int timeout_ms){
 
    size_t total_read = 0;
    int r = 0;
-   int retries = 100;
+   int retries = 1000;
 
    while (total_read < msg_size && retries-- > 0) {
       int poll_result = poll(ufdr, 1, timeout_ms);
@@ -147,7 +147,7 @@ int io_read_timeout(int fd, __uint8_t *buffer, size_t msg_size, int timeout_ms){
       }
    } 
    if (total_read == msg_size) return 1; // success
-   fprintf(stderr, "DEBUG: io_read_timeout() has reached timeout.\n");
+   fprintf(stderr, "WARN: io_read_timeout() has reached timeout.\n");
    return 0;   
 }
 

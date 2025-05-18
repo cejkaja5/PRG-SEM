@@ -223,14 +223,14 @@ void join_all_threads(int N, thread_t threads[N]){
     }
 }
 
-int create_all_threads(int N, thread_t threads[N], void *data){
+int create_all_threads(int N, thread_t threads[N]){
     int ret = ERROR_OK;
     for (int i = 0; i < N; i++){
         if ((ret = pthread_mutex_init(&threads[i].lock, NULL)) != ERROR_OK) {
             fprintf(stderr, "ERROR: Initialization of mutex in '%s' thread failed.\n", threads[i].thread_name);
             return ERROR_CREATING_THREADS;
         };
-        if ((ret = pthread_create(&threads[i].thread, NULL, threads[i].thread_function, data)) != ERROR_OK){
+        if ((ret = pthread_create(&threads[i].thread, NULL, threads[i].thread_function, threads[i].data)) != ERROR_OK){
             fprintf(stderr, "ERROR: Creating thread '%s' failed.\n", threads[i].thread_name);
             return ERROR_CREATING_THREADS;
         } else {
@@ -258,8 +258,11 @@ void queue_create(queue_t *queue){
     pthread_mutex_init(&queue->lock, NULL);
 }
 
-void queue_clear(queue_t *queue){
+void queue_clear(queue_t *queue){    
     pthread_mutex_lock(&queue->lock);
+#if DEBUG_MULTITHREADING
+    fprintf(stderr, "DEBUG: Clearing queue.\n");
+#endif
     clear(queue->q);
     pthread_mutex_unlock(&queue->lock);
 }
@@ -283,6 +286,13 @@ void queue_destroy(queue_t *queue){
     free(queue->q);
     pthread_mutex_unlock(&queue->lock);
     pthread_mutex_destroy(&queue->lock);
+}
+
+int queue_size(queue_t *queue){
+    pthread_mutex_lock(&queue->lock);
+    int r = size(queue->q);
+    pthread_mutex_unlock(&queue->lock);
+    return r;
 }
 
 

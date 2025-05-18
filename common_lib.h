@@ -30,7 +30,8 @@
 #define DEBUG_MUTEX 0
 #define DEBUG_COMPUTATIONS 0
 #define DEBUG_GUI 0
-#define DEBUG_MEMORY 1
+#define DEBUG_MEMORY 0
+#define DEBUG_MULTITHREADING 0
 
 enum {
     ERROR_OK = 0,
@@ -51,6 +52,7 @@ typedef struct {
     pthread_t thread;
     thread_fnc_ptr thread_function;
     char *thread_name;
+    void *data;
 } thread_t;
 
 typedef struct {
@@ -63,12 +65,13 @@ bool open_pipes(data_t *in, data_t *out, atomic_bool *quit, const char *in_pipe_
 bool send_message(int *fd, message msg, pthread_mutex_t *fd_lock);
 bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *fd_lock);
 void join_all_threads(int N, thread_t threads[N]);
-int create_all_threads(int N, thread_t threads[N], void *data);
+int create_all_threads(int N, thread_t threads[N]);
 
 void queue_create(queue_t *queue);
 void queue_clear(queue_t *queue);
 void* queue_pop(queue_t *queue);
 void queue_push(queue_t *queue, void *entry);
 void queue_destroy(queue_t *queue);
+int queue_size(queue_t *queue);
 
 #endif 
