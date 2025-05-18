@@ -411,6 +411,7 @@ static void send_compute_message(thread_shared_data_t *data){
             queue_push(&queue_of_CIDs_to_be_computed, msg);
         }
     }
+    usleep(DELAY_MS * 1000);
     for (int i = 0; i < module_num_of_threads; i++){
         message *tmp = queue_pop(&queue_of_CIDs_to_be_computed);
         if (tmp != NULL) {
