@@ -27,6 +27,7 @@ static void computational_module_init(void);
 static const uint8_t major = 1;
 static const uint8_t minor = 2;
 static const uint8_t patch = 3;
+static const uint8_t startup_message[] = {'c','e','j','k','a','\0'};
 
 static double complex c = 0.0 + 0.0 * I; // constant for calculation
 static double complex d = 0.0 + 0.0 * I; // increment
@@ -51,7 +52,8 @@ int main(int argc, char *argv[]) {
 
     if (open_pipes(&data->app_to_module, &data->module_to_app, &data->quit, 
         app_to_module_pipe_name, module_to_app_pipe_name)){
-        message msg = {.type = MSG_STARTUP};    
+        message msg = {.type = MSG_STARTUP};
+        memcpy(msg.data.startup.message, startup_message, sizeof(startup_message));    
         send_message(&data->module_to_app.fd, msg, &data->module_to_app.lock);
     }
 
@@ -63,6 +65,7 @@ int main(int argc, char *argv[]) {
 
 static void *read_from_pipe(void *arg){
     thread_shared_data_t *data = (thread_shared_data_t *)arg;
+    queue_t queue;
     
     while (data->module_to_app.fd == -1 && !atomic_load(&data->quit)){
         usleep(DELAY_MS);

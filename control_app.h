@@ -5,6 +5,14 @@
 #include "common_lib.h"
 #include "xwin_sdl.h"
 
+#ifndef STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#endif
+
+#include "stb_image_write.h"
+
+#define MAX_IMAGE_NAME_LENGHT 30
+
 #ifdef thread_shared_data_t
 #undef thread_shared_data_t
 #endif

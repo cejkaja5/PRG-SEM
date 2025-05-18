@@ -1,7 +1,6 @@
 
 #include "common_lib.h"
 #include "control_app.h"
-#include "queue.h"
 
 
 static void *read_user_input(void* arg);
@@ -14,9 +13,6 @@ static void send_compute_message(thread_shared_data_t *data);
 static void send_set_compute_message(thread_shared_data_t *data);
 static void handle_message_compute_data(message msg);
 static void handle_message_compute_data_burst(message msg);
-static void queue_clear(void* queue);
-static void* queue_pop(void *queue);
-static void queue_push(void *queue, void *entry);
 static void close_window_safe(void);
 static void redraw_window_safe(void);
 static void open_window_safe(void);
@@ -34,6 +30,7 @@ static void calculate_window_parameters(void);
 static void zoom_in(void);
 static void zoom_out(void);
 static void move_image(int direction);
+static void save_image(void);
 
 static uint8_t chunk_width = 60;
 static uint8_t chunk_height = 60;
@@ -48,8 +45,7 @@ static complex double upper_right_corner = 1.6 + 1.1 * I;
 static complex double pixel_size = 0.0 + 0.0 * I; // will be calculated at runtime
 static complex double recurzive_eq_constant = -0.4 + 0.6 * I; 
 static int window_state = WINDOW_NOT_INITIATED;
-static void *queue_of_CIDs_to_be_computed;
-static pthread_mutex_t queue_mtx;
+static queue_t queue_of_CIDs_to_be_computed;
 
 int main(int argc, char *argv[]) {
     control_app_init(argc, argv);
@@ -115,24 +111,11 @@ static void *read_user_input(void* arg){
         case '1':
             if (data->app_to_module.fd == -1) break;
             send_compute_message(data);
-            break;
-
-#if DEBUG_GUI            
-        case '2':
-            fprintf(stderr, "INFO: Requesting singe chunk computation - debuging function.\n");
-            msg.type = MSG_COMPUTE;
-            msg.data.compute.cid = 5;
-            msg.data.compute.re = -0.6;
-            msg.data.compute.im = 0.0;
-            msg.data.compute.n_re = chunk_width;
-            msg.data.compute.n_im = chunk_height;
-            send_message(&data->app_to_module.fd, msg, &data->app_to_module.lock);
-            break;
-#endif        
+            break;   
         case 'a':
             if (data->app_to_module.fd == -1) break;
             fprintf(stderr, "INFO: Requesting abortion.\n");
-            queue_clear(queue_of_CIDs_to_be_computed);
+            queue_clear(&queue_of_CIDs_to_be_computed);
             msg.type = MSG_ABORT;
             send_message(&data->app_to_module.fd, msg, &data->app_to_module.lock); 
             break;
@@ -180,6 +163,9 @@ static void *read_user_input(void* arg){
             send_set_compute_message(data);
             send_compute_message(data);
             break;
+        case 'x':
+            save_image();
+            break;
         default:
             break;
         }
@@ -202,7 +188,7 @@ static void *read_from_pipe(void *arg){
         switch (msg.type)
         {
         case MSG_STARTUP:
-            fprintf(stderr, "INFO: Modul startup was successfull\n");
+            fprintf(stderr, "INFO: Modul startup was successfull. Startup message: %s\n", msg.data.startup.message);
             break;
         case MSG_OK:
             fprintf(stderr, "INFO: Modul responded OK.\n");
@@ -229,7 +215,7 @@ static void *read_from_pipe(void *arg){
         case MSG_DONE:
             fprintf(stderr, "INFO: Modul is done with computing a chunk.\n");
             if (data->app_to_module.fd == -1) break;
-            message *tmp = queue_pop(queue_of_CIDs_to_be_computed);
+            message *tmp = queue_pop(&queue_of_CIDs_to_be_computed);
             if (tmp != NULL) {
                 send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
                 free(tmp);
@@ -237,7 +223,7 @@ static void *read_from_pipe(void *arg){
             break;
         case MSG_ABORT:
             fprintf(stderr, "INFO: Modul has aborted computation.\n");
-            queue_clear(queue_of_CIDs_to_be_computed);
+            queue_clear(&queue_of_CIDs_to_be_computed);
             break;
         case MSG_VERSION:
             fprintf(stderr, "INFO: Modul version is %d.%d.%d\n", msg.data.version.major,
@@ -274,16 +260,14 @@ static void destroy_shared_data(thread_shared_data_t *data){
 static void cleanup(void){
     call_termios(SET_TERMINAL_TO_DEFAULT);
     free(bitmap);
-    queue_clear(queue_of_CIDs_to_be_computed);
-    free(queue_of_CIDs_to_be_computed);
+    queue_clear(&queue_of_CIDs_to_be_computed);
 }
 
 static void control_app_init(int argc, char *argv[]){
     call_termios(SET_TERMINAL_TO_RAW);
     atexit(cleanup);
-    queue_of_CIDs_to_be_computed = create();
-    setClear(queue_of_CIDs_to_be_computed, free);
-    pthread_mutex_init(&queue_mtx, NULL);
+    queue_create(&queue_of_CIDs_to_be_computed);
+    pthread_mutex_init(&queue_of_CIDs_to_be_computed.lock, NULL);
     signal(SIGPIPE, SIG_IGN);
     fprintf(stderr, "INFO: Press 'h' for help.\n");
     int tmp;
@@ -374,7 +358,7 @@ static void calculate_window_parameters(void){
 
 static void send_compute_message(thread_shared_data_t *data){
     fprintf(stderr, "INFO: Requesting module computation.\n");
-    queue_clear(queue_of_CIDs_to_be_computed);
+    queue_clear(&queue_of_CIDs_to_be_computed);
     complex double first_chunk_corner = lower_left_corner + 
         ((chunks_in_col - 1) * chunk_height * cimag(pixel_size)) * I;
     for (int c_row = 0; c_row < chunks_in_col; c_row++){
@@ -391,10 +375,10 @@ static void send_compute_message(thread_shared_data_t *data){
             msg->data.compute.im = cimag(first_chunk_corner) - c_row * chunk_height * cimag(pixel_size);
             msg->data.compute.n_re = chunk_width;
             msg->data.compute.n_im = chunk_height;
-            queue_push(queue_of_CIDs_to_be_computed, msg);
+            queue_push(&queue_of_CIDs_to_be_computed, msg);
         }
     }
-    message *tmp = queue_pop(queue_of_CIDs_to_be_computed);
+    message *tmp = queue_pop(&queue_of_CIDs_to_be_computed);
     if (tmp != NULL) {
         send_message(&data->app_to_module.fd, *tmp, &data->app_to_module.lock);
         free(tmp);
@@ -403,7 +387,7 @@ static void send_compute_message(thread_shared_data_t *data){
 
 static void send_set_compute_message(thread_shared_data_t *data){
     message msg;
-    queue_clear(queue_of_CIDs_to_be_computed);
+    queue_clear(&queue_of_CIDs_to_be_computed);
     msg.type = MSG_SET_COMPUTE;
     msg.data.set_compute.c_re = creal(recurzive_eq_constant);
     msg.data.set_compute.c_im = cimag(recurzive_eq_constant);
@@ -459,24 +443,7 @@ static void handle_message_compute_data_burst(message msg){
     redraw_window_safe();
 }
 
-static void queue_clear(void *queue){
-    pthread_mutex_lock(&queue_mtx);
-    clear(queue);
-    pthread_mutex_unlock(&queue_mtx);
-}
 
-static void* queue_pop(void *queue){
-    pthread_mutex_lock(&queue_mtx);
-    void * tmp = pop(queue);
-    pthread_mutex_unlock(&queue_mtx);
-    return tmp;
-}
-
-static void queue_push(void *queue, void *entry){
-    pthread_mutex_lock(&queue_mtx);
-    push(queue, entry);
-    pthread_mutex_unlock(&queue_mtx);
-}
 
 
 static void close_window_safe(void){
@@ -531,19 +498,20 @@ static void print_help(void){
     fprintf(stderr, "  argv[11] - Maximum number of iterations of recursive equation. Must be between 1 and 255\n");
     fprintf(stderr, "\n============================= COMMANDS =============================\n");
     fprintf(stderr, "  'q' - Quit application and module.\n");
+    fprintf(stderr, "  'h' - Help message.\n");
     fprintf(stderr, "  'g' - Get module version.\n");
     fprintf(stderr, "  'p' - Parameters for computation settings.\n");
     fprintf(stderr, "  's' - Set module computation parameners.\n");
-    fprintf(stderr, "  '1' - Run computation. Computation parameters must be set prior.\n");
-#if DEBUG_GUI
-    fprintf(stderr, " '2' - Compute chunk 5. Debuging function. Computation parameters must be set prior.\n");
-#endif    
+    fprintf(stderr, "  '1' - Run computation. Computation parameters must be set prior.\n"); 
     fprintf(stderr, "  'a' - Abort computation.\n");
+    fprintf(stderr, "  'x' - Export image as png.\n");
     fprintf(stderr, "  'w' - Initialize window.\n");
     fprintf(stderr, "  'r' - Redraw window with current buffer.\n");
     fprintf(stderr, "  'c' - Close window.\n");
     fprintf(stderr, "  'e' - Erase buffer.\n");
-    fprintf(stderr, "  'h' - Help message.\n");
+    fprintf(stderr, "  '+' - Zoom in.\n");
+    fprintf(stderr, "  '-' - Zoom out.\n");
+    fprintf(stderr, "  'arrows' - Move image.\n");
     fprintf(stderr, "====================================================================\n\n");
 }
 
@@ -818,5 +786,27 @@ static void move_image(int direction){
     }
 }
 
+static void save_image(void){
+    int ch;
+    while ((ch = getchar()) != '\n' && ch != EOF); // clear stdin
+    call_termios(SET_TERMINAL_TO_DEFAULT);
+    fprintf(stderr, "INFO: Saving image as png. Enter image name without suffix (leave blank to cancel):\n");
+    char name[MAX_IMAGE_NAME_LENGHT + 1 + 4] = {0}; // leave space for .png
+    const char suffix[] = ".png";
+    fgets(name, MAX_IMAGE_NAME_LENGHT, stdin);
+    if (name[0] == '\0' || name[0] == '\n') {
+        fprintf(stderr, "INFO: Saving image was canceled.\n");
+        call_termios(SET_TERMINAL_TO_RAW);    
+        return; // user didnt enter anything
+    }
+    name[strcspn(name, "\n")] = '\0'; 
+    strcpy(&name[strcspn(name, "\0")], suffix);
+    if (stbi_write_png(name, width, heigth, 3, bitmap, width * 3) == 0){
+        fprintf(stderr, "ERROR: Saving image failed.\n");
+    } else {
+        fprintf(stderr, "INFO: Image was saved successfully.\n");
+    }
+    call_termios(SET_TERMINAL_TO_RAW);
+}
 
 

@@ -18,6 +18,7 @@
 
 #include "prg_io_nonblock.h"
 #include "messages.h"
+#include "queue.h"
 
 #define SET_TERMINAL_TO_RAW 0
 #define SET_TERMINAL_TO_DEFAULT 1
@@ -52,11 +53,22 @@ typedef struct {
     char *thread_name;
 } thread_t;
 
+typedef struct {
+    void *q;
+    pthread_mutex_t lock;
+} queue_t;  
+
 void call_termios(int reset);
 bool open_pipes(data_t *in, data_t *out, atomic_bool *quit, const char *in_pipe_name, const char *out_pipe_name);
 bool send_message(int *fd, message msg, pthread_mutex_t *fd_lock);
 bool recieve_message(int fd, message *out_msg, int timeout_ms, pthread_mutex_t *fd_lock);
 void join_all_threads(int N, thread_t threads[N]);
 int create_all_threads(int N, thread_t threads[N], void *data);
+
+void queue_create(queue_t *queue);
+void queue_clear(queue_t *queue);
+void* queue_pop(queue_t *queue);
+void queue_push(queue_t *queue, void *entry);
+void queue_destroy(queue_t *queue);
 
 #endif 

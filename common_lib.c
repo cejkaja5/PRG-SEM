@@ -6,21 +6,28 @@ static void clear_pipe(int fd);
 void call_termios(int reset) {
     static struct termios tio, tioOld;
     static int stdin_flags = -1;
+    static bool has_made_default_backup = false;
 
     if (reset) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &tioOld);
-        if (stdin_flags != -1){ // unset nonblock
-            fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+        if (has_made_default_backup){
+            tcsetattr(STDIN_FILENO, TCSANOW, &tioOld);
+            if (stdin_flags != -1){ // unset nonblock
+                fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+            }
         }
     }
     else {
+        if (!has_made_default_backup){ // make backup
+            tcgetattr(STDIN_FILENO, &tioOld);
+            stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0); 
+            has_made_default_backup = true;
+        }
         tcgetattr(STDIN_FILENO, &tio);
-        tioOld = tio; // backup
         cfmakeraw(&tio);
         tio.c_oflag |= OPOST;
         tcsetattr(STDIN_FILENO, TCSANOW, &tio);
-        stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0); // save stdin flags
-        fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK); // set stdin to nonblock
+        stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+        fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK); //set nonblock
     }
 }
 
@@ -241,5 +248,41 @@ static void clear_pipe(int fd){ // assumes caller function still holds mutex to 
     while ((r = read(fd, garbage, sizeof(garbage))) > 0) ; // clear all leftover data in pipe
 }
 
+void queue_create(queue_t *queue){
+    queue->q = create();
+    if (queue->q == NULL) {
+        fprintf(stderr, "FATAL ERROR: Allocation of queue failed.\n");
+        exit(ERROR_ALLOCATION);
+    }
+    setClear(queue->q, free);
+    pthread_mutex_init(&queue->lock, NULL);
+}
+
+void queue_clear(queue_t *queue){
+    pthread_mutex_lock(&queue->lock);
+    clear(queue->q);
+    pthread_mutex_unlock(&queue->lock);
+}
+
+void* queue_pop(queue_t *queue){
+    pthread_mutex_lock(&queue->lock);
+    void *tmp = pop(queue->q);
+    pthread_mutex_unlock(&queue->lock);
+    return tmp;
+}
+
+void queue_push(queue_t *queue, void *entry){
+    pthread_mutex_lock(&queue->lock);
+    push(queue->q, entry);
+    pthread_mutex_unlock(&queue->lock);
+}
+
+void queue_destroy(queue_t *queue){
+    pthread_mutex_lock(&queue->lock);
+    clear(queue->q);
+    free(queue->q);
+    pthread_mutex_unlock(&queue->lock);
+    pthread_mutex_destroy(&queue->lock);
+}
 
 
